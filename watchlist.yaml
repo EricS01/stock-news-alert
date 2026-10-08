@@ -1,0 +1,18 @@
+# Stocks to watch. Aliases are matched case-insensitively as whole words.
+# Tickers are matched as cashtags ($NVDA) or uppercase standalone words.
+threshold: 4  # minimum impact score (1-5) to send a push
+
+sources:
+  hackernews: true
+  news: true
+  sec: true
+  reddit: true
+
+stocks:
+  AAPL: [Apple, iPhone, Tim Cook]
+  MSFT: [Microsoft, Azure, Satya Nadella]
+  NVDA: [Nvidia, Jensen Huang]
+  GOOGL: [Google, Alphabet, Waymo, Sundar Pichai]
+  AMZN: [Amazon, AWS, Andy Jassy]
+  META: [Meta Platforms, Facebook, Instagram, WhatsApp, Mark Zuckerberg, Zuckerberg]
+  TSLA: [Tesla, Elon Musk]
