@@ -56,6 +56,7 @@ def run(dry_run: bool = False) -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
     for alert in alerts:
+        alert.score = max(alert.score, sec_edgar.score_floor(alert.item))
         log.info("%s %d/5 %s", alert.ticker, alert.score, alert.item.title)
         if alert.score >= threshold:
             notifier.send(alert)

@@ -91,3 +91,15 @@ def fetch(tickers: List[str], since: Optional[float] = None) -> List[NewsItem]:
         items += parse_submissions(resp.json(), ticker, cik, since)
         time.sleep(0.15)  # SEC fair-access limit is 10 req/s
     return items
+
+
+# 8-K items that are almost always price-moving: earnings, M&A, exec changes.
+HIGH_IMPACT_8K_ITEMS = {"1.01", "2.01", "2.02", "5.02"}
+
+
+def score_floor(item: NewsItem) -> int:
+    """Minimum impact score for a filing, regardless of what the model says."""
+    if item.source != "sec" or item.meta.get("form") != "8-K":
+        return 0
+    filed = {x.strip() for x in (item.meta.get("items") or "").split(",")}
+    return 4 if filed & HIGH_IMPACT_8K_ITEMS else 0
