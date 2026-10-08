@@ -32,6 +32,8 @@ class Matcher:
         return hits
 
     def match(self, item: NewsItem) -> List[str]:
-        tickers = self.match_text(f"{item.title}\n{item.text}")
+        found = self.match_text(f"{item.title}\n{item.text}")
+        # keep tickers a source already attached (e.g. per-ticker feeds), in watchlist order
+        tickers = [t for t in self.patterns if t in found or t in item.tickers]
         item.tickers = tickers
         return tickers
