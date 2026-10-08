@@ -10,19 +10,27 @@ from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
 from .scorer import Scorer
-from .sources import hackernews
+from .sources import hackernews, news_feeds
 from .state import State
 
 log = logging.getLogger("alerts")
 
 
 def collect(cfg, state: State) -> List[NewsItem]:
+    sources = {
+        "hackernews": lambda: hackernews.fetch(since=state.last_run),
+        "news": lambda: news_feeds.fetch(cfg.stocks, since=state.last_run),
+    }
     items: List[NewsItem] = []
-    if cfg.source_enabled("hackernews"):
+    for name, fetch in sources.items():
+        if not cfg.source_enabled(name):
+            continue
         try:
-            items += hackernews.fetch(since=state.last_run)
+            got = fetch()
+            log.info("%s: %d items", name, len(got))
+            items += got
         except Exception as e:  # one broken source shouldn't stop the run
-            log.warning("hackernews failed: %s", e)
+            log.warning("%s failed: %s", name, e)
     return items
 
 
