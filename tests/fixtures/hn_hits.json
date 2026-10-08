@@ -1,0 +1,5 @@
+{"hits": [
+  {"objectID": "101", "title": "Nvidia announces new Blackwell successor", "url": "https://example.com/nvda", "created_at_i": 1760000000, "points": 120, "num_comments": 40},
+  {"objectID": "102", "title": "Ask HN: What are you working on?", "url": null, "story_text": "Share your projects", "created_at_i": 1760000100},
+  {"objectID": "103", "title": null, "created_at_i": 1760000200}
+]}
