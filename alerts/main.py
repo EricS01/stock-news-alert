@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 from typing import List
 
@@ -23,11 +24,11 @@ def collect(cfg, state: State) -> List[NewsItem]:
     return items
 
 
-def run() -> None:
+def run(dry_run: bool = False) -> None:
     cfg = load_config()
     state = State()
     matcher = Matcher(cfg.stocks)
-    notifier = Notifier()
+    notifier = Notifier(dry_run=dry_run)
 
     items = [i for i in collect(cfg, state) if not state.is_seen(i.id)]
     log.info("fetched %d new items", len(items))
@@ -36,9 +37,13 @@ def run() -> None:
         for ticker in matcher.match(item):
             notifier.send(Alert(item=item, ticker=ticker, score=3, direction="neutral", reason="Mentioned"))
         state.mark_seen(item.id)
-    state.save()
+    if not dry_run:  # dry runs shouldn't consume items
+        state.save()
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Check news sources and push stock alerts")
+    parser.add_argument("--dry-run", action="store_true", help="print alerts instead of pushing; don't save state")
+    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    run()
+    run(dry_run=args.dry_run)
