@@ -10,7 +10,7 @@ from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
 from .scorer import Scorer
-from .sources import hackernews, news_feeds
+from .sources import hackernews, news_feeds, sec_edgar
 from .state import State
 
 log = logging.getLogger("alerts")
@@ -20,6 +20,7 @@ def collect(cfg, state: State) -> List[NewsItem]:
     sources = {
         "hackernews": lambda: hackernews.fetch(since=state.last_run),
         "news": lambda: news_feeds.fetch(cfg.stocks, since=state.last_run),
+        "sec": lambda: sec_edgar.fetch(list(cfg.stocks), since=state.last_run),
     }
     items: List[NewsItem] = []
     for name, fetch in sources.items():
