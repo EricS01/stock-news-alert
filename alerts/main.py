@@ -10,7 +10,7 @@ from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
 from .scorer import Scorer
-from .sources import hackernews, news_feeds, sec_edgar
+from .sources import hackernews, news_feeds, reddit, sec_edgar
 from .state import State
 
 log = logging.getLogger("alerts")
@@ -21,7 +21,11 @@ def collect(cfg, state: State) -> List[NewsItem]:
         "hackernews": lambda: hackernews.fetch(since=state.last_run),
         "news": lambda: news_feeds.fetch(cfg.stocks, since=state.last_run),
         "sec": lambda: sec_edgar.fetch(list(cfg.stocks), since=state.last_run),
+        "reddit": lambda: reddit.fetch(since=state.last_run),
     }
+    if not (os.environ.get("REDDIT_CLIENT_ID") and os.environ.get("REDDIT_CLIENT_SECRET")):
+        log.info("reddit: skipped (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET not set)")
+        sources.pop("reddit")
     items: List[NewsItem] = []
     for name, fetch in sources.items():
         if not cfg.source_enabled(name):
