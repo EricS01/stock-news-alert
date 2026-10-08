@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from typing import List
 
 from .config import load_config
 from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
+from .scorer import Scorer
 from .sources import hackernews
 from .state import State
 
@@ -31,11 +33,25 @@ def run(dry_run: bool = False) -> None:
     notifier = Notifier(dry_run=dry_run)
 
     items = [i for i in collect(cfg, state) if not state.is_seen(i.id)]
-    log.info("fetched %d new items", len(items))
+    pairs = [(item, ticker) for item in items for ticker in matcher.match(item)]
+    log.info("fetched %d new items, %d watchlist matches", len(items), len(pairs))
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        alerts = Scorer().score(pairs)
+        threshold = cfg.threshold
+    elif dry_run:
+        log.warning("ANTHROPIC_API_KEY not set; showing unscored matches")
+        alerts = [Alert(item=i, ticker=t, score=0, direction="neutral", reason="(unscored)") for i, t in pairs]
+        threshold = 0
+    else:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+    for alert in alerts:
+        log.info("%s %d/5 %s", alert.ticker, alert.score, alert.item.title)
+        if alert.score >= threshold:
+            notifier.send(alert)
 
     for item in items:
-        for ticker in matcher.match(item):
-            notifier.send(Alert(item=item, ticker=ticker, score=3, direction="neutral", reason="Mentioned"))
         state.mark_seen(item.id)
     if not dry_run:  # dry runs shouldn't consume items
         state.save()
