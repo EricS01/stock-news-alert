@@ -76,6 +76,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m alerts.main --dry-run
 ```
 
+To use real keys locally, copy `.env.example` to `.env`, fill it in, and run `set -a; source .env; set +a`. `.env` is gitignored.
+
 `--dry-run` prints alerts instead of pushing them and doesn't save state. Without `ANTHROPIC_API_KEY`, it lists the unscored watchlist matches.
 
 ```bash
