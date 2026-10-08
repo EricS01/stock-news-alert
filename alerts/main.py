@@ -10,7 +10,7 @@ from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
 from .scorer import Scorer
-from .sources import hackernews, news_feeds
+from .sources import hackernews, news_feeds, sec_edgar
 from .state import State
 
 log = logging.getLogger("alerts")
@@ -20,6 +20,7 @@ def collect(cfg, state: State) -> List[NewsItem]:
     sources = {
         "hackernews": lambda: hackernews.fetch(since=state.last_run),
         "news": lambda: news_feeds.fetch(cfg.stocks, since=state.last_run),
+        "sec": lambda: sec_edgar.fetch(list(cfg.stocks), since=state.last_run),
     }
     items: List[NewsItem] = []
     for name, fetch in sources.items():
@@ -55,6 +56,7 @@ def run(dry_run: bool = False) -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
     for alert in alerts:
+        alert.score = max(alert.score, sec_edgar.score_floor(alert.item))
         log.info("%s %d/5 %s", alert.ticker, alert.score, alert.item.title)
         if alert.score >= threshold:
             notifier.send(alert)
