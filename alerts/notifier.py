@@ -16,6 +16,9 @@ def format_alert(alert: Alert) -> dict:
         "title": f"{alert.ticker} {arrow} {alert.score}/5 — {alert.item.title}"[:200],
         "message": f"{alert.reason}\n\nvia {alert.item.source}",
         "click": alert.item.url,
+        # ntfy priority 5 = urgent (bypasses Do Not Disturb on some phones), 4 = high
+        "priority": 5 if alert.score >= 5 else 4,
+        "tags": [{"bullish": "chart_with_upwards_trend", "bearish": "chart_with_downwards_trend"}.get(alert.direction, "newspaper")],
     }
 
 
