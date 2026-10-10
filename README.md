@@ -50,11 +50,11 @@ A push looks like this: **NVDA ▼ 4/5 — Nvidia under DOJ antitrust probe**, f
 
 3. Go to **Actions → Check news → Run workflow**. Run it once with *dry run* checked, then once without.
 
-After that, GitHub's own schedule runs it about every 15 minutes, though it's unreliable. To make it dependable, set up the EventBridge trigger described below.
+The workflow has no built-in schedule. To run it automatically every 15 minutes, set up the EventBridge trigger described below.
 
 ## Reliable scheduling with AWS EventBridge
 
-GitHub's built-in `schedule:` trigger is best-effort: runs can be delayed by 15+ minutes, dropped under load, or never registered at all. Instead, an AWS EventBridge schedule calls GitHub's [workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) every 15 minutes. That's the same call the **Run workflow** button makes, and GitHub runs those right away rather than queueing them.
+GitHub's built-in `schedule:` trigger is best-effort: runs can be delayed by 15+ minutes, dropped under load, or never registered at all. So the workflow doesn't use it. Instead, an AWS EventBridge schedule calls GitHub's [workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) every 15 minutes. That's the same call the **Run workflow** button makes, and GitHub runs those right away rather than queueing them.
 
 ### How it works
 
@@ -135,7 +135,7 @@ To use real keys locally, copy `.env.example` to `.env`, fill it in, and run `se
 ```
 
 ## Caveats
-- GitHub's built-in `schedule:` can be delayed, dropped, or never registered. Use the EventBridge trigger above for dependable runs. Once it's working, remove the `schedule:` block from `check.yml` so runs don't double up.
+- Automatic runs depend entirely on the EventBridge trigger. If it breaks (an expired token, or a disabled schedule or rule), nothing runs until it's fixed. You can still start a run by hand with **Run workflow**.
 - **GitHub Actions minutes:** a private repo gets 2,000 free minutes a month, and each run is billed as at least 1 minute. Running every 15 minutes is about 2,880 runs a month, which exceeds that. To stay free, run every 30 minutes, make the repo public, or allow paid overage (about $7/month).
 - When the GitHub token expires, the EventBridge trigger stops working silently. Renew it before the expiry date.
 - This is an alerting tool, not investment advice. Impact scores are the model's judgment and can be wrong.
