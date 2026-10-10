@@ -1,10 +1,9 @@
 name: Check news
 
+# Triggered every 15 min by AWS EventBridge via the workflow_dispatch API
+# (see README: "Reliable scheduling with AWS EventBridge"). GitHub's own
+# `schedule:` trigger was removed because it was unreliable.
 on:
-  schedule:
-    # Off the top of the hour: GitHub may drop scheduled runs during the
-    # :00 rush, so run at :07, :22, :37, :52 instead.
-    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
