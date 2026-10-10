@@ -50,11 +50,11 @@ A push looks like this: **NVDA ▼ 4/5 — Nvidia under DOJ antitrust probe**, f
 
 3. Go to **Actions → Check news → Run workflow**. Run it once with *dry run* checked, then once without.
 
-The workflow has no built-in schedule. To run it automatically every 15 minutes, set up the EventBridge trigger described below.
+The workflow has no built-in schedule. To run it automatically every 30 minutes, set up the EventBridge trigger described below.
 
 ## Reliable scheduling with AWS EventBridge
 
-GitHub's built-in `schedule:` trigger is best-effort: runs can be delayed by 15+ minutes, dropped under load, or never registered at all. So the workflow doesn't use it. Instead, an AWS EventBridge schedule calls GitHub's [workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) every 15 minutes. That's the same call the **Run workflow** button makes, and GitHub runs those right away rather than queueing them.
+GitHub's built-in `schedule:` trigger is best-effort: runs can be delayed by 15+ minutes, dropped under load, or never registered at all. So the workflow doesn't use it. Instead, an AWS EventBridge schedule calls GitHub's [workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event) every 30 minutes. That's the same call the **Run workflow** button makes, and GitHub runs those right away rather than queueing them.
 
 ### How it works
 
@@ -62,12 +62,12 @@ AWS has moved scheduled rules into **EventBridge Scheduler**, which can't call a
 
 ```
 EventBridge Scheduler ──PutEvents──► default event bus ──► Rule ──► API destination ──POST──► GitHub API
-  rate(15 minutes)                   source + detail-type    match     + connection (token)      workflow_dispatch
+  rate(30 minutes)                   source + detail-type    match     + connection (token)      workflow_dispatch
 ```
 
 | Piece | What it does | Key config |
 |---|---|---|
-| **Scheduler** `check-news-every-15m` | Fires every 15 min and sends an event to the `default` bus | Target: *Amazon EventBridge (PutEvents)* · source `stock-alerts.scheduler` · detail-type `TriggerCheck` · detail `{}` · flexible window off |
+| **Scheduler** `check-news-every-15m` | Fires every 30 min and sends an event to the `default` bus | Target: *Amazon EventBridge (PutEvents)* · source `stock-alerts.scheduler` · detail-type `TriggerCheck` · detail `{}` · flexible window off |
 | **Rule** `trigger-check-news` | Matches that event and forwards it to the API destination | Pattern `{"source":["stock-alerts.scheduler"],"detail-type":["TriggerCheck"]}` · **target input: Constant `{"ref":"main"}`** · retries 2, max age 10 min |
 | **API destination** `github-check-news` | The HTTP endpoint the rule calls | `POST https://api.github.com/repos/EricS01/stock-news-alert/actions/workflows/check.yml/dispatches` · limited to 1 call per second |
 | **Connection** `github` | Handles authentication (the token is stored in Secrets Manager) | API-key auth: `Authorization: Bearer github_pat_…` · headers `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28` |
@@ -87,7 +87,7 @@ All the AWS pieces live in one region (here, `us-east-2`). The scheduler sends i
    - Set the **target input** to Constant `{"ref":"main"}`. Without it, GitHub receives the whole event and rejects it with a 422.
    - Set retries to 2 with a 10-minute maximum age, so an outage doesn't cause a burst of stale runs later.
 4. **Schedule:** go to **EventBridge → Scheduler → Create schedule**.
-   - Choose a rate-based schedule of 15 minutes.
+   - Choose a rate-based schedule of 30 minutes. That's about 1,440 runs a month, which keeps a private repo within GitHub's 2,000 free Actions minutes (see Caveats). The first run happens one interval after you create the schedule.
    - Target: *Amazon EventBridge* → `default` bus, with the source and detail-type from the table.
    - Let it create a new role.
 
@@ -136,6 +136,6 @@ To use real keys locally, copy `.env.example` to `.env`, fill it in, and run `se
 
 ## Caveats
 - Automatic runs depend entirely on the EventBridge trigger. If it breaks (an expired token, or a disabled schedule or rule), nothing runs until it's fixed. You can still start a run by hand with **Run workflow**.
-- **GitHub Actions minutes:** a private repo gets 2,000 free minutes a month, and each run is billed as at least 1 minute. Running every 15 minutes is about 2,880 runs a month, which exceeds that. To stay free, run every 30 minutes, make the repo public, or allow paid overage (about $7/month).
+- **GitHub Actions minutes:** a private repo gets 2,000 free minutes a month, and each run is billed as at least 1 minute. The 30-minute schedule (about 1,440 runs a month) stays within that, but alerts can arrive up to about 30 minutes after the news. Every 15 minutes would be about 2,880 runs, over the free tier: for faster alerts, make the repo public or allow paid overage (about $7/month).
 - When the GitHub token expires, the EventBridge trigger stops working silently. Renew it before the expiry date.
 - This is an alerting tool, not investment advice. Impact scores are the model's judgment and can be wrong.

@@ -1,6 +1,6 @@
 name: Check news
 
-# Triggered every 15 min by AWS EventBridge via the workflow_dispatch API
+# Triggered every 30 min by AWS EventBridge via the workflow_dispatch API
 # (see README: "Reliable scheduling with AWS EventBridge"). GitHub's own
 # `schedule:` trigger was removed because it was unreliable.
 on:
