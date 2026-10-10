@@ -50,7 +50,7 @@ A push looks like this: **NVDA ▼ 4/5 — Nvidia under DOJ antitrust probe**, f
 
 3. Go to **Actions → Check news → Run workflow**. Run it once with *dry run* checked, then once without.
 
-After that it runs every 15 minutes on its own.
+After that, GitHub's own schedule runs it about every 15 minutes, though it's unreliable. To make it dependable, set up the EventBridge trigger described below.
 
 ## Reliable scheduling with AWS EventBridge
 
@@ -135,6 +135,7 @@ To use real keys locally, copy `.env.example` to `.env`, fill it in, and run `se
 ```
 
 ## Caveats
-- GitHub can delay scheduled runs by 5–15 minutes when it's busy, so alerts aren't instant.
-- GitHub disables scheduled workflows after 60 days without repo activity. The state commits normally count as activity. If the workflow gets disabled anyway, re-enable it under Actions.
+- GitHub's built-in `schedule:` can be delayed, dropped, or never registered. Use the EventBridge trigger above for dependable runs. Once it's working, remove the `schedule:` block from `check.yml` so runs don't double up.
+- **GitHub Actions minutes:** a private repo gets 2,000 free minutes a month, and each run is billed as at least 1 minute. Running every 15 minutes is about 2,880 runs a month, which exceeds that. To stay free, run every 30 minutes, make the repo public, or allow paid overage (about $7/month).
+- When the GitHub token expires, the EventBridge trigger stops working silently. Renew it before the expiry date.
 - This is an alerting tool, not investment advice. Impact scores are the model's judgment and can be wrong.
