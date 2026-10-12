@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -14,6 +15,7 @@ log = logging.getLogger(__name__)
 MODEL = "claude-haiku-5-5"
 PROMPT_VERSION = "v1"  # bump when SYSTEM or MODEL changes, so scores stay comparable
 BATCH_SIZE = 10
+WORKERS = 4  # batches scored concurrently
 
 SYSTEM = """You are a sell-side equity analyst triaging a news feed for a retail investor.
 For each numbered (headline, ticker) pair, judge how likely the news is to move that
@@ -95,6 +97,25 @@ def parse_results(text: str, pairs: List[Pair]) -> List[Alert]:
     return alerts
 
 
+def make_batches(pairs: List[Pair], size: int = BATCH_SIZE) -> List[List[Pair]]:
+    """Split pairs into batches of about `size`, never splitting one item's pairs.
+
+    Keeping an item in one batch means its scoring succeeds or fails as a whole,
+    so a failed item can simply be retried later.
+    """
+    batches: List[List[Pair]] = []
+    current: List[Pair] = []
+    for item_id in dict.fromkeys(item.id for item, _ in pairs):  # first-seen order
+        group = [p for p in pairs if p[0].id == item_id]
+        if current and len(current) + len(group) > size:
+            batches.append(current)
+            current = []
+        current += group
+    if current:
+        batches.append(current)
+    return batches
+
+
 class Scorer:
     def __init__(self, client: Optional[anthropic.Anthropic] = None):
         self.client = client or anthropic.Anthropic()
@@ -116,15 +137,21 @@ class Scorer:
         text = next(b.text for b in response.content if b.type == "text")
         return parse_results(text, pairs)
 
+    def _try_batch(self, batch: List[Pair]) -> Optional[List[Alert]]:
+        try:
+            return self._score_batch(batch)
+        except anthropic.APIError as e:
+            log.warning("scoring batch failed: %s", e)
+            return None
+
     def score(self, pairs: List[Pair]) -> ScoreResult:
-        result = ScoreResult()
-        for start in range(0, len(pairs), BATCH_SIZE):
-            batch = pairs[start : start + BATCH_SIZE]
-            result.batches += 1
-            try:
-                result.alerts += self._score_batch(batch)
-            except anthropic.APIError as e:
-                log.warning("scoring batch failed: %s", e)
-                result.failed_batches += 1
-                result.failed += batch
+        batches = make_batches(pairs)
+        result = ScoreResult(batches=len(batches))
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            for batch, alerts in zip(batches, pool.map(self._try_batch, batches)):
+                if alerts is None:
+                    result.failed_batches += 1
+                    result.failed += batch
+                else:
+                    result.alerts += alerts
         return result

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set
 
 import yaml
 
@@ -15,6 +15,7 @@ class Config:
     stocks: Dict[str, List[str]]
     threshold: int = 4
     sources: Dict[str, bool] = field(default_factory=dict)
+    cashtag_only: Set[str] = field(default_factory=set)
 
     def source_enabled(self, name: str) -> bool:
         return self.sources.get(name, True)
@@ -29,4 +30,5 @@ def load_config(path: Path = DEFAULT_PATH) -> Config:
         stocks=stocks,
         threshold=int(data.get("threshold", 4)),
         sources=data.get("sources") or {},
+        cashtag_only={t.upper() for t in data.get("cashtag_only") or []},
     )

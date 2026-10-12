@@ -41,3 +41,11 @@ def test_matches(m, text, expected):
 )
 def test_no_false_positives(m, text):
     assert m.match_text(text) == []
+
+
+def test_cashtag_only_tickers_ignore_the_bare_word():
+    m = Matcher({"CRM": ["Salesforce"], "COST": ["Costco"]}, cashtag_only=["CRM", "COST"])
+    assert m.match_text("Open-source CRM for small teams") == []
+    assert m.match_text("LOW COST airline expands") == []
+    assert m.match_text("$CRM jumps after earnings") == ["CRM"]
+    assert m.match_text("Costco raises membership fee") == ["COST"]

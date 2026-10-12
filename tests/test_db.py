@@ -27,8 +27,9 @@ def test_migrate_is_idempotent(conn):
 
 
 def test_item_roundtrip_and_existing_ids(conn):
-    db.insert_item(conn, _item())
-    db.insert_item(conn, _item())  # duplicate insert is a no-op
+    db.insert_items(conn, [_item()])
+    db.insert_items(conn, [_item()])  # duplicate insert is a no-op
+    db.insert_items(conn, [])
     assert db.existing_item_ids(conn, ["hn:1", "hn:2"]) == {"hn:1"}
     assert db.existing_item_ids(conn, []) == set()
     meta, published = conn.execute("SELECT meta, published_at FROM news_items").fetchone()
@@ -46,19 +47,19 @@ def test_first_prompt_version_is_active_later_ones_shadow(conn):
 
 def test_scores_are_unique_per_item_ticker_version(conn):
     db.ensure_prompt_version(conn, "v1", "m", "p")
-    db.insert_item(conn, _item())
+    db.insert_items(conn, [_item()])
     kw = dict(item_id="hn:1", ticker="NVDA", prompt_version="v1", direction="bearish",
               reason="probe", floor_applied=False, alerted=True)
-    db.insert_score(conn, score=4, **kw)
-    db.insert_score(conn, score=2, **kw)
+    db.insert_scores(conn, [dict(score=4, **kw)])
+    db.insert_scores(conn, [dict(score=2, **kw)])
     assert conn.execute("SELECT score, alerted FROM scores").fetchall() == [(4, True)]
 
 
 def test_score_must_reference_an_item(conn):
     db.ensure_prompt_version(conn, "v1", "m", "p")
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        db.insert_score(conn, item_id="nope", ticker="NVDA", prompt_version="v1", score=3,
-                        direction="neutral", reason="", floor_applied=False, alerted=False)
+        db.insert_scores(conn, [dict(item_id="nope", ticker="NVDA", prompt_version="v1", score=3,
+                                     direction="neutral", reason="", floor_applied=False, alerted=False)])
 
 
 def test_runs_track_last_ok_start(conn):

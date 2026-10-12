@@ -28,7 +28,9 @@ def connect(url: Optional[str] = None) -> psycopg.Connection:
     url = url or os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is not set")
-    return psycopg.connect(url, autocommit=True)
+    # No server-side prepared statements: Neon's pooled endpoint (PgBouncer) may hand
+    # each transaction a different backend.
+    return psycopg.connect(url, autocommit=True, prepare_threshold=None)
 
 
 # --- migrations -------------------------------------------------------------
@@ -108,37 +110,31 @@ def ensure_prompt_version(conn: psycopg.Connection, version: str, model: str, sy
     )
 
 
-def insert_item(conn: psycopg.Connection, item: NewsItem) -> None:
-    conn.execute(
-        """
-        INSERT INTO news_items (id, source, title, url, text, published_at, meta)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING
-        """,
-        (item.id, item.source, item.title, item.url, item.text, item.published_at, Jsonb(item.meta)),
-    )
+def insert_items(conn: psycopg.Connection, items: List[NewsItem]) -> None:
+    # executemany pipelines the statements: one round trip per batch, not per row.
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO news_items (id, source, title, url, text, published_at, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            [(i.id, i.source, i.title, i.url, i.text, i.published_at, Jsonb(i.meta)) for i in items],
+        )
 
 
-def insert_score(
-    conn: psycopg.Connection,
-    *,
-    item_id: str,
-    ticker: str,
-    prompt_version: str,
-    score: int,
-    direction: str,
-    reason: str,
-    floor_applied: bool,
-    alerted: bool,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO scores (item_id, ticker, prompt_version, score, direction, reason, floor_applied, alerted)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (item_id, ticker, prompt_version) DO NOTHING
-        """,
-        (item_id, ticker, prompt_version, score, direction, reason, floor_applied, alerted),
-    )
+def insert_scores(conn: psycopg.Connection, rows: List[dict]) -> None:
+    """Each row is a dict keyed by the column names below."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO scores (item_id, ticker, prompt_version, score, direction, reason, floor_applied, alerted)
+            VALUES (%(item_id)s, %(ticker)s, %(prompt_version)s, %(score)s, %(direction)s, %(reason)s,
+                    %(floor_applied)s, %(alerted)s)
+            ON CONFLICT (item_id, ticker, prompt_version) DO NOTHING
+            """,
+            rows,
+        )
 
 
 def main() -> None:
