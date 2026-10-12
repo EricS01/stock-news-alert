@@ -1,7 +1,7 @@
 import json
 
 from alerts.models import NewsItem
-from alerts.scorer import build_prompt, parse_results
+from alerts.scorer import build_prompt, make_batches, parse_results
 
 
 def _pairs():
@@ -24,3 +24,16 @@ def test_parse_results_maps_indexes_and_clamps():
     alerts = parse_results(text, _pairs())
     assert [(a.ticker, a.score) for a in alerts] == [("NVDA", 5), ("GOOGL", 1)]
     assert alerts[0].direction == "bearish"
+
+
+def test_make_batches_keeps_an_items_pairs_together():
+    a = NewsItem(id="a", source="news", title="t", url="u")
+    b = NewsItem(id="b", source="news", title="t", url="u")
+    c = NewsItem(id="c", source="news", title="t", url="u")
+    pairs = [(a, "NVDA"), (a, "AMD"), (b, "AAPL"), (b, "MSFT"), (b, "GOOGL"), (c, "TSLA")]
+    batches = make_batches(pairs, size=4)
+    assert [[(i.id, t) for i, t in batch] for batch in batches] == [
+        [("a", "NVDA"), ("a", "AMD")],
+        [("b", "AAPL"), ("b", "MSFT"), ("b", "GOOGL"), ("c", "TSLA")],
+    ]
+    assert make_batches([]) == []
