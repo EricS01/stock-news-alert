@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import anthropic
@@ -11,6 +12,7 @@ from .models import Alert, NewsItem
 log = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-5-5"
+PROMPT_VERSION = "v1"  # bump when SYSTEM or MODEL changes, so scores stay comparable
 BATCH_SIZE = 10
 
 SYSTEM = """You are a sell-side equity analyst triaging a news feed for a retail investor.
@@ -50,6 +52,18 @@ SCHEMA = {
 }
 
 Pair = Tuple[NewsItem, str]
+
+
+@dataclass
+class ScoreResult:
+    alerts: List[Alert] = field(default_factory=list)
+    failed: List[Pair] = field(default_factory=list)  # pairs whose batch errored; retry later
+    batches: int = 0
+    failed_batches: int = 0
+
+    @property
+    def all_failed(self) -> bool:
+        return self.batches > 0 and self.failed_batches == self.batches
 
 
 def build_prompt(pairs: List[Pair]) -> str:
@@ -102,12 +116,15 @@ class Scorer:
         text = next(b.text for b in response.content if b.type == "text")
         return parse_results(text, pairs)
 
-    def score(self, pairs: List[Pair]) -> List[Alert]:
-        alerts: List[Alert] = []
+    def score(self, pairs: List[Pair]) -> ScoreResult:
+        result = ScoreResult()
         for start in range(0, len(pairs), BATCH_SIZE):
             batch = pairs[start : start + BATCH_SIZE]
+            result.batches += 1
             try:
-                alerts += self._score_batch(batch)
+                result.alerts += self._score_batch(batch)
             except anthropic.APIError as e:
                 log.warning("scoring batch failed: %s", e)
-        return alerts
+                result.failed_batches += 1
+                result.failed += batch
+        return result
