@@ -125,9 +125,12 @@ sources:
   reddit: false       # turn a source off
 stocks:
   AMD: [Advanced Micro Devices, Lisa Su]   # ticker: [aliases]
+cashtag_only: [CRM, COST]                  # tickers that are also common words
 ```
 
-Tickers match as `$AMD` or a standalone uppercase `AMD`. Aliases match case-insensitively as whole words. For tickers outside the default list, the SEC source looks up the CIK automatically.
+Tickers match as `$AMD` or a standalone uppercase `AMD`. Aliases match case-insensitively as whole words. Tickers listed under `cashtag_only` match only as `$CRM`, so "CRM software" or "LOW COST" don't count; their aliases (Salesforce, Costco) still match. For tickers outside the default list, the SEC source looks up the CIK automatically.
+
+The default watchlist has 17 large caps: AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, AMD, AVGO, NFLX, CRM, ORCL, JPM, UNH, LLY, XOM and COST. Each run fetches sources concurrently, scores Claude batches four at a time, and writes to Postgres in one transaction, so it stays well under a minute (GitHub bills each started minute). Every run's phase timings are in `runs.counts` (`fetch_s`, `score_s`, `write_s`, `duration_s`).
 
 ## Running locally
 
