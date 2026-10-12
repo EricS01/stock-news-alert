@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Pattern, Tuple
+from typing import Dict, Iterable, List, Pattern, Tuple
 
 from .models import NewsItem
 
@@ -11,12 +11,15 @@ class Matcher:
 
     Tickers are matched case-sensitively (as "$NVDA" or a standalone "NVDA")
     so words like "meta" don't trigger. Company aliases are case-insensitive.
+    Tickers in `cashtag_only` match only as "$CRM", since the bare word is common.
     """
 
-    def __init__(self, stocks: Dict[str, List[str]]):
+    def __init__(self, stocks: Dict[str, List[str]], cashtag_only: Iterable[str] = ()):
+        cashtag_only = set(cashtag_only)
         self.patterns: Dict[str, Tuple[Pattern, Pattern]] = {}
         for ticker, aliases in stocks.items():
-            ticker_re = re.compile(r"(?:\$|\b)%s\b(?!-)" % re.escape(ticker))
+            prefix = r"\$" if ticker in cashtag_only else r"(?:\$|\b)"
+            ticker_re = re.compile(r"%s%s\b(?!-)" % (prefix, re.escape(ticker)))
             alias_re = (
                 re.compile(r"\b(?:%s)\b" % "|".join(re.escape(a) for a in aliases), re.IGNORECASE)
                 if aliases
