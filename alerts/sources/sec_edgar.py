@@ -4,7 +4,7 @@ import calendar
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import requests
@@ -73,6 +73,7 @@ def parse_submissions(data: dict, ticker: str, cik: int, since: float) -> List[N
                 title=title,
                 url=ARCHIVE.format(cik=cik, acc=acc.replace("-", ""), doc=recent["primaryDocument"][i]),
                 text=recent.get("primaryDocDescription", [""] * (i + 1))[i],
+                published_at=accepted.replace(tzinfo=timezone.utc),
                 tickers=[ticker],
                 meta={"form": form, "items": sec_items},
             )
