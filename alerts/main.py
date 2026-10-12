@@ -13,6 +13,7 @@ from .config import load_config
 from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
+from .runs import RunFailed, record_run
 from .scorer import MODEL, PROMPT_VERSION, SYSTEM, ScoreResult, Scorer
 from .sources import hackernews, news_feeds, reddit, sec_edgar
 
@@ -23,10 +24,6 @@ JOB = "alerts"
 # the database dedupes the overlap. Never look back further than MAX_LOOKBACK.
 OVERLAP = timedelta(minutes=30)
 MAX_LOOKBACK = timedelta(hours=24)
-
-
-class RunFailed(RuntimeError):
-    pass
 
 
 def collect(cfg, since: Optional[float], timings: Optional[Dict[str, float]] = None) -> List[NewsItem]:
@@ -191,34 +188,17 @@ def run(dry_run: bool = False) -> None:
             process(conn, items, matcher, notifier, scorer, threshold, dry_run=True)
         else:
             def work() -> dict:
+                db.ensure_prompt_version(conn, PROMPT_VERSION, MODEL, SYSTEM)
                 fetch_s: Dict[str, float] = {}
                 items = collect(cfg, fetch_since(conn), fetch_s)
                 counts = process(conn, items, matcher, notifier, scorer, threshold)
                 counts["fetch_s"] = fetch_s
                 return counts
 
-            record_run(conn, work)
+            record_run(conn, JOB, work)
     finally:
         if conn is not None:
             conn.close()
-
-
-def record_run(conn, work) -> dict:
-    """Run `work` inside a `runs` row: ok with its counts, or failed with the error."""
-    started = time.monotonic()
-    db.ensure_prompt_version(conn, PROMPT_VERSION, MODEL, SYSTEM)
-    run_id = db.start_run(conn, JOB)
-    try:
-        counts = work()
-    except Exception as e:
-        counts = e.args[1] if isinstance(e, RunFailed) and len(e.args) > 1 else {}
-        counts["duration_s"] = round(time.monotonic() - started, 1)
-        db.finish_run(conn, run_id, "failed", counts, error=str(e.args[0]) if e.args else repr(e))
-        raise
-    counts["duration_s"] = round(time.monotonic() - started, 1)
-    log.info("run counts: %s", counts)
-    db.finish_run(conn, run_id, "ok", counts)
-    return counts
 
 
 if __name__ == "__main__":

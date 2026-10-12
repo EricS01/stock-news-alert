@@ -1,7 +1,8 @@
 import pytest
 
 from alerts import db
-from alerts.main import RunFailed, dedupe, process, record_run
+from alerts.main import dedupe, process
+from alerts.runs import RunFailed, record_run
 from alerts.matcher import Matcher
 from alerts.models import Alert, NewsItem
 from alerts.scorer import ScoreResult
@@ -114,13 +115,13 @@ def test_record_run_marks_failure(conn):
     def work():
         raise RunFailed("all 2 scoring batches failed", {"pairs": 12})
     with pytest.raises(RunFailed):
-        record_run(conn, work)
+        record_run(conn, "alerts", work)
     status, counts, error = conn.execute("SELECT status, counts, error FROM runs").fetchone()
     assert status == "failed" and error == "all 2 scoring batches failed"
     assert counts["pairs"] == 12 and "duration_s" in counts
 
 
 def test_record_run_ok(conn):
-    record_run(conn, lambda: {"pairs": 0})
+    record_run(conn, "alerts", lambda: {"pairs": 0})
     assert conn.execute("SELECT status FROM runs").fetchone() == ("ok",)
     assert db.last_ok_run_start(conn, "alerts") is not None
