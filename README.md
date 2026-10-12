@@ -6,7 +6,9 @@ Sends a push notification to your phone when news breaks that could move a stock
 Hacker News ─┐
 News RSS ────┤                                   score ≥ 4
 SEC EDGAR ───┼─► dedupe ─► watchlist match ─► Claude impact score ─────────► ntfy push 📱
-Reddit ──────┘
+Reddit ──────┘      │                                │
+                    └──────── Neon Postgres ◄────────┘
+                      every item, every score, every run
 ```
 
 A push looks like this: **NVDA ▼ 4/5 — Nvidia under DOJ antitrust probe**, followed by a one-line reason. Tapping it opens the article.
@@ -37,12 +39,23 @@ A push looks like this: **NVDA ▼ 4/5 — Nvidia under DOJ antitrust probe**, f
 - **Reddit app** (optional): https://www.reddit.com/prefs/apps → "create another app" → type **script**. Copy the client ID (under the app name) and the secret.
 - **SEC User-Agent**: a string with your name and email, e.g. `Jane Doe jane@example.com`. [SEC requires this](https://www.sec.gov/os/accessing-edgar-data).
 
-### 3. GitHub
+### 3. Database: Neon Postgres
+Every fetched item, every score (not only the ones that alert), and every run is stored in Postgres. That's what dedupes items between runs, and it's the data the research loop builds on (see `docs/plans/postgres-research-loop.md`).
+
+1. Sign up at https://neon.tech (the free tier is plenty).
+2. Create a project named `stock-news-alerts` in an AWS region near your EventBridge setup (e.g. `us-east-2`).
+3. Create a branch named `dev` for local work (**Branches → New branch**).
+4. For each of `main` and `dev`, open **Connect** and copy the connection string. Use the **pooled** string (host contains `-pooler`) for `DATABASE_URL`, and the direct one for running tests. Both should end in `?sslmode=require`.
+
+Tables are created by migrations in `migrations/`, applied automatically at the start of each workflow run (`python -m alerts.db migrate`). Applied migrations are recorded in `schema_migrations`.
+
+### 4. GitHub
 1. Create a **private** repo and push this project to it.
 2. Go to **Settings → Secrets and variables → Actions → New repository secret** and add:
 
    | Secret | Required |
    |---|---|
+   | `DATABASE_URL` | yes: the pooled connection string for the Neon `main` branch |
    | `ANTHROPIC_API_KEY` | yes |
    | `NTFY_TOPIC` | yes |
    | `SEC_USER_AGENT` | yes |
@@ -128,14 +141,33 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 To use real keys locally, copy `.env.example` to `.env`, fill it in, and run `set -a; source .env; set +a`. `.env` is gitignored.
 
-`--dry-run` prints alerts instead of pushing them and doesn't save state. Without `ANTHROPIC_API_KEY`, it lists the unscored watchlist matches.
+`--dry-run` prints alerts instead of pushing them and never writes to the database (it still reads it to skip items already processed). Without `ANTHROPIC_API_KEY`, it lists the unscored watchlist matches; without `DATABASE_URL`, it skips dedupe.
+
+Point `DATABASE_URL` in `.env` at the Neon `dev` branch, never `main`. Before the first run against a new branch:
+
+```bash
+.venv/bin/python -m alerts.db migrate
+```
 
 ```bash
 .venv/bin/python -m pytest
 ```
 
+Database tests run only when `TEST_DATABASE_URL` is set; otherwise they're skipped. Use the **direct** (non-pooled) `dev` connection string: each test creates and drops its own schema, so it never touches the tables the app uses. CI always runs them against a Postgres service container.
+
+To look around the data, use the Neon **SQL Editor**, or `psql "$DATABASE_URL"`:
+
+```sql
+SELECT s.scored_at, s.ticker, s.score, s.direction, n.title
+FROM scores s JOIN news_items n ON n.id = s.item_id
+ORDER BY s.scored_at DESC LIMIT 20;
+
+SELECT started_at, status, counts, error FROM runs ORDER BY started_at DESC LIMIT 10;
+```
+
 ## Caveats
 - Automatic runs depend entirely on the EventBridge trigger. If it breaks (an expired token, or a disabled schedule or rule), nothing runs until it's fixed. You can still start a run by hand with **Run workflow**.
 - **GitHub Actions minutes:** a private repo gets 2,000 free minutes a month, and each run is billed as at least 1 minute. The 30-minute schedule (about 1,440 runs a month) stays within that, but alerts can arrive up to about 30 minutes after the news. Every 15 minutes would be about 2,880 runs, over the free tier: for faster alerts, make the repo public or allow paid overage (about $7/month).
+- A run fails (red in Actions, so GitHub emails you) when every scoring call fails, a push can't be sent, or the database is unreachable. Items that couldn't be scored are retried on the next run.
 - When the GitHub token expires, the EventBridge trigger stops working silently. Renew it before the expiry date.
 - This is an alerting tool, not investment advice. Impact scores are the model's judgment and can be wrong.

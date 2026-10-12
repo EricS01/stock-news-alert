@@ -26,3 +26,4 @@ class Alert:
     score: int  # 1-5 impact
     direction: str  # bullish / bearish / neutral
     reason: str
+    floor_applied: bool = False  # score was raised by a rule-based floor (SEC 8-K items)
