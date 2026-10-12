@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, List, Optional
 
@@ -28,7 +29,8 @@ class RunFailed(RuntimeError):
     pass
 
 
-def collect(cfg, since: Optional[float]) -> List[NewsItem]:
+def collect(cfg, since: Optional[float], timings: Optional[Dict[str, float]] = None) -> List[NewsItem]:
+    """Fetch every enabled source concurrently. Per-source seconds go into `timings`."""
     sources = {
         "hackernews": lambda: hackernews.fetch(since=since),
         "news": lambda: news_feeds.fetch(cfg.stocks, since=since),
@@ -38,16 +40,25 @@ def collect(cfg, since: Optional[float]) -> List[NewsItem]:
     if not (os.environ.get("REDDIT_CLIENT_ID") and os.environ.get("REDDIT_CLIENT_SECRET")):
         log.info("reddit: skipped (REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET not set)")
         sources.pop("reddit")
-    items: List[NewsItem] = []
-    for name, fetch in sources.items():
-        if not cfg.source_enabled(name):
-            continue
+    sources = {name: fetch for name, fetch in sources.items() if cfg.source_enabled(name)}
+    timings = timings if timings is not None else {}
+
+    def timed(name: str) -> List[NewsItem]:
+        started = time.monotonic()
         try:
-            got = fetch()
+            got = sources[name]()
             log.info("%s: %d items", name, len(got))
-            items += got
+            return got
         except Exception as e:  # one broken source shouldn't stop the run
             log.warning("%s failed: %s", name, e)
+            return []
+        finally:
+            timings[name] = round(time.monotonic() - started, 1)
+
+    items: List[NewsItem] = []
+    with ThreadPoolExecutor(max_workers=max(len(sources), 1)) as pool:
+        for got in pool.map(timed, sources):
+            items += got
     return items
 
 
@@ -96,7 +107,9 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
     pairs = [(item, ticker) for item in items for ticker in matcher.match(item)]
     log.info("fetched %d new items, %d watchlist matches", len(items), len(pairs))
 
+    t = time.monotonic()
     result: ScoreResult = scorer(pairs)
+    score_s = round(time.monotonic() - t, 1)
     if result.all_failed:
         raise RunFailed(f"all {result.batches} scoring batches failed")
 
@@ -118,26 +131,27 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
 
     failed_ids = {item.id for item, _ in result.failed}
     if conn is not None and not dry_run:
-        alerts_by_item: Dict[str, List[Alert]] = {}
-        for alert in result.alerts:
-            alerts_by_item.setdefault(alert.item.id, []).append(alert)
-        for item in items:
-            if item.id in failed_ids:
-                continue
-            with conn.transaction():
-                db.insert_item(conn, item)
-                for a in alerts_by_item.get(item.id, []):
-                    db.insert_score(
-                        conn,
-                        item_id=item.id,
-                        ticker=a.ticker,
-                        prompt_version=PROMPT_VERSION,
-                        score=a.score,
-                        direction=a.direction,
-                        reason=a.reason,
-                        floor_applied=a.floor_applied,
-                        alerted=sent.get((item.id, a.ticker), False),
-                    )
+        done = [item for item in items if item.id not in failed_ids]
+        scores = [
+            {
+                "item_id": a.item.id,
+                "ticker": a.ticker,
+                "prompt_version": PROMPT_VERSION,
+                "score": a.score,
+                "direction": a.direction,
+                "reason": a.reason,
+                "floor_applied": a.floor_applied,
+                "alerted": sent.get((a.item.id, a.ticker), False),
+            }
+            for a in result.alerts
+        ]
+        t = time.monotonic()
+        with conn.transaction():  # all or nothing: a failed write leaves every item to retry
+            db.insert_items(conn, done)
+            db.insert_scores(conn, scores)
+        write_s = round(time.monotonic() - t, 1)
+    else:
+        write_s = 0.0
 
     counts = {
         "fetched": fetched,
@@ -147,6 +161,8 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
         "failed_pairs": len(result.failed),
         "alerts": len(sent),
         "notify_failures": notify_failures,
+        "score_s": score_s,
+        "write_s": write_s,
     }
     if notify_failures:
         raise RunFailed(f"{notify_failures} push notification(s) failed", counts)
@@ -155,7 +171,7 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
 
 def run(dry_run: bool = False) -> None:
     cfg = load_config()
-    matcher = Matcher(cfg.stocks)
+    matcher = Matcher(cfg.stocks, cfg.cashtag_only)
     notifier = Notifier(dry_run=dry_run)
     # Unscored dry runs (no API key) show every match.
     threshold = cfg.threshold if os.environ.get("ANTHROPIC_API_KEY") else 0
@@ -174,7 +190,14 @@ def run(dry_run: bool = False) -> None:
             items = collect(cfg, fetch_since(conn))
             process(conn, items, matcher, notifier, scorer, threshold, dry_run=True)
         else:
-            record_run(conn, lambda: process(conn, collect(cfg, fetch_since(conn)), matcher, notifier, scorer, threshold))
+            def work() -> dict:
+                fetch_s: Dict[str, float] = {}
+                items = collect(cfg, fetch_since(conn), fetch_s)
+                counts = process(conn, items, matcher, notifier, scorer, threshold)
+                counts["fetch_s"] = fetch_s
+                return counts
+
+            record_run(conn, work)
     finally:
         if conn is not None:
             conn.close()
