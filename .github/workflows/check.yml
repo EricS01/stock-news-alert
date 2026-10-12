@@ -1,20 +1,26 @@
 name: Check news
+run-name: ${{ inputs.job || 'alerts' }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
-# Triggered every 30 min by AWS EventBridge via the workflow_dispatch API
-# (see README: "Reliable scheduling with AWS EventBridge"). GitHub's own
-# `schedule:` trigger was removed because it was unreliable.
+# Triggered by AWS EventBridge via the workflow_dispatch API (see README:
+# "Reliable scheduling with AWS EventBridge"); each schedule sends a different
+# `job`. GitHub's own `schedule:` trigger was removed because it was unreliable.
 on:
   workflow_dispatch:
     inputs:
+      job:
+        description: "alerts (every 30 min) or label (weekdays before the close)"
+        type: choice
+        options: [alerts, label]
+        default: alerts
       dry_run:
         description: "Print alerts instead of pushing"
         type: boolean
         default: false
 
-# Never run two checks at once: overlapping runs could both see an item as new
-# and send duplicate pushes.
+# Never run two of the same job at once: overlapping alert runs could both see
+# an item as new and send duplicate pushes. Different jobs may overlap.
 concurrency:
-  group: check-news
+  group: check-news-${{ inputs.job || 'alerts' }}
   cancel-in-progress: false
 
 permissions:
@@ -47,5 +53,13 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
-        run: python -m alerts.main ${{ inputs.dry_run && '--dry-run' || '' }}
+          JOB: ${{ inputs.job || 'alerts' }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: |
+          case "$JOB" in
+            alerts) module=alerts.main ;;
+            label)  module=alerts.labeler ;;
+            *) echo "unknown job: $JOB"; exit 1 ;;
+          esac
+          python -m "$module" $DRY_RUN
 
