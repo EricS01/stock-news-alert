@@ -1,5 +1,7 @@
 # Stocks to watch. Aliases are matched case-insensitively as whole words.
 # Tickers are matched as cashtags ($NVDA) or uppercase standalone words.
+# Tickers listed under cashtag_only match only as cashtags, because the bare
+# word is common in other contexts ("CRM software", "LOW COST").
 threshold: 4  # minimum impact score (1-5) to send a push
 
 sources:
@@ -16,3 +18,15 @@ stocks:
   AMZN: [Amazon, AWS, Andy Jassy]
   META: [Meta Platforms, Facebook, Instagram, WhatsApp, Mark Zuckerberg, Zuckerberg]
   TSLA: [Tesla, Elon Musk]
+  AMD: [Advanced Micro Devices, Lisa Su]
+  AVGO: [Broadcom, Hock Tan]
+  NFLX: [Netflix]
+  CRM: [Salesforce, Marc Benioff]
+  ORCL: [Oracle, Larry Ellison]
+  JPM: [JPMorgan, JP Morgan, Jamie Dimon]
+  UNH: [UnitedHealth, UnitedHealthcare, Optum]
+  LLY: [Eli Lilly, Mounjaro, Zepbound]
+  XOM: [Exxon, ExxonMobil, Exxon Mobil]
+  COST: [Costco]
+
+cashtag_only: [CRM, COST]
