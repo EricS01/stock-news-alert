@@ -137,6 +137,46 @@ def insert_scores(conn: psycopg.Connection, rows: List[dict]) -> None:
         )
 
 
+# --- price outcomes ---------------------------------------------------------
+
+
+def pending_outcomes(conn: psycopg.Connection) -> List[tuple]:
+    """Scored (item, ticker) pairs with no outcome yet, or one still pending.
+
+    Rows: (item_id, ticker, first_scored_at, entry_ts, entry_price, spy_entry_price).
+    """
+    return conn.execute(
+        """
+        SELECT s.item_id, s.ticker, min(s.scored_at), p.entry_ts, p.entry_price, p.spy_entry_price
+        FROM scores s
+        LEFT JOIN price_outcomes p USING (item_id, ticker)
+        WHERE p.status IS NULL OR p.status = 'pending'
+        GROUP BY s.item_id, s.ticker, p.entry_ts, p.entry_price, p.spy_entry_price
+        ORDER BY 3
+        """
+    ).fetchall()
+
+
+OUTCOME_COLUMNS = (
+    "item_id", "ticker", "first_scored_at", "entry_ts", "entry_price", "spy_entry_price",
+    "ret_1d", "ret_3d", "ret_5d", "spy_ret_1d", "spy_ret_3d", "spy_ret_5d", "status",
+)
+
+
+def upsert_outcomes(conn: psycopg.Connection, rows: List[dict]) -> None:
+    cols = ", ".join(OUTCOME_COLUMNS)
+    values = ", ".join(f"%({c})s" for c in OUTCOME_COLUMNS)
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in OUTCOME_COLUMNS[2:])
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            f"""
+            INSERT INTO price_outcomes ({cols}) VALUES ({values})
+            ON CONFLICT (item_id, ticker) DO UPDATE SET {updates}, labeled_at = now()
+            """,
+            rows,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Database utilities")
     parser.add_argument("command", choices=["migrate"])

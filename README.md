@@ -106,6 +106,21 @@ All the AWS pieces live in one region (here, `us-east-2`). The scheduler sends i
 
 Cost: about $0.40/month for the Secrets Manager secret. The schedule and the calls themselves cost a fraction of a cent.
 
+### Second schedule: daily labeling
+
+The `label` job reuses the same API destination and connection. It only needs its own schedule and rule, so that the rule can send a different input:
+
+1. **Rule:** go to **EventBridge → Rules → Create rule** on the `default` bus.
+   - Name: `trigger-label`. Pattern: `{"source":["stock-alerts.scheduler"],"detail-type":["TriggerLabel"]}`
+   - Target: the same API destination, `github-check-news`.
+   - **Target input:** Constant `{"ref":"main","inputs":{"job":"label"}}`
+   - Retries 2, maximum age 10 minutes.
+2. **Schedule:** go to **EventBridge → Scheduler → Create schedule**.
+   - Name: `label-weekdays`. Use a **cron-based** schedule, `cron(45 19 ? * MON-FRI *)`, with time zone **UTC**. That's 3:45 pm EDT or 2:45 pm EST, so it's inside market hours all year. Flexible window off.
+   - Target: *Amazon EventBridge* → `default` bus, source `stock-alerts.scheduler`, detail-type `TriggerLabel`, detail `{}`.
+
+These runs show up on the Actions tab named **label**; alert runs are named **alerts**.
+
 ### Troubleshooting
 
 Runs started this way show up on the Actions tab as **workflow_dispatch**. If none appear, open **EventBridge → Rules → trigger-check-news → Monitoring**:
@@ -113,7 +128,25 @@ Runs started this way show up on the Actions tab as **workflow_dispatch**. If no
 | Symptom | Likely cause |
 |---|---|
 | No invocations | The schedule's source or detail-type doesn't match the rule pattern, or the schedule is in a different region |
-| `FailedInvocations` | The token is expired or wrong, the `Bearer ` prefix is missing, or the target input isn't `{"ref":"main"}` |
+| `FailedInvocations` | The token is expired or wrong, the `Bearer ` prefix is missing, or the target input isn't valid JSON like `{"ref":"main"}` |
+
+## Measuring outcomes: the label job
+
+Every score is kept, so the app can check afterwards whether high scores actually preceded big moves. The `label` job runs on weekdays shortly before the close and fills in `price_outcomes` for every scored (item, ticker) pair:
+
+- **Entry:** the open of the first 5-minute bar at or after the pair was first scored. If the market was closed, that's the next regular-session open.
+- **Returns:** close +1, +3 and +5 trading days after the entry day, divided by the entry price, minus 1. The same is computed for SPY, and the **abnormal return** (stock − SPY) is a generated column.
+- A pair stays `pending` until all three horizons have closed, so labeling picks it up again on later runs. A day's close only counts once it's final, so the 19:45 UTC run never uses today's partial bar. Pairs that still can't be completed after 30 days become `expired`.
+- Prices come from Yahoo Finance via `yfinance` (free, unofficial). If one ticker fails, its pairs are retried the next day. If SPY fails, the run fails.
+
+Run it by hand from **Actions → Check news → Run workflow** with job `label`, or locally with `python -m alerts.labeler --dry-run`. Example query:
+
+```sql
+SELECT s.score, count(*), avg(abs(p.abn_1d)) AS mean_abs_abn_1d
+FROM scores s JOIN price_outcomes p USING (item_id, ticker)
+WHERE p.ret_1d IS NOT NULL
+GROUP BY s.score ORDER BY s.score;
+```
 
 ## Customizing
 
