@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from . import db
@@ -13,6 +13,8 @@ from .config import load_config
 from .matcher import Matcher
 from .models import Alert, NewsItem
 from .notifier import Notifier
+from .options import snapshots
+from .options.yahoo import YahooChains
 from .runs import RunFailed, record_run
 from .scorer import MODEL, PROMPT_VERSION, SYSTEM, ScoreResult, Scorer
 from .sources import hackernews, news_feeds, reddit, sec_edgar
@@ -143,9 +145,11 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
             for a in result.alerts
         ]
         t = time.monotonic()
+        snapshot = [(a.item.id, a.ticker) for a in result.alerts if a.score >= threshold]
         with conn.transaction():  # all or nothing: a failed write leaves every item to retry
             db.insert_items(conn, done)
             db.insert_scores(conn, scores)
+            db.enqueue_snapshots(conn, snapshot)  # options entry snapshot, taken during market hours
         write_s = round(time.monotonic() - t, 1)
     else:
         write_s = 0.0
@@ -193,6 +197,9 @@ def run(dry_run: bool = False) -> None:
                 items = collect(cfg, fetch_since(conn), fetch_s)
                 counts = process(conn, items, matcher, notifier, scorer, threshold)
                 counts["fetch_s"] = fetch_s
+                t = time.monotonic()
+                counts["options"] = snapshots.guarded("entries", snapshots.take_entries, conn, YahooChains(), datetime.now(timezone.utc))
+                counts["options_s"] = round(time.monotonic() - t, 1)
                 return counts
 
             record_run(conn, JOB, work)
