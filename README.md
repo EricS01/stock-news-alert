@@ -121,6 +121,13 @@ The `label` job reuses the same API destination and connection. It only needs it
 
 These runs show up on the Actions tab named **label**; alert runs are named **alerts**.
 
+### Third schedule: weekly report
+
+Same pattern again, for the `report` job:
+
+1. **Rule** `trigger-report`: pattern `{"source":["stock-alerts.scheduler"],"detail-type":["TriggerReport"]}`, the same API destination, **target input** Constant `{"ref":"main","inputs":{"job":"report"}}`, retries 2, maximum age 10 minutes.
+2. **Schedule** `report-weekly`: cron `0 14 ? * SAT *` in **UTC** (Saturday morning in the US), target the `default` bus with source `stock-alerts.scheduler`, detail-type `TriggerReport`, detail `{}`.
+
 ### Troubleshooting
 
 Runs started this way show up on the Actions tab as **workflow_dispatch**. If none appear, open **EventBridge → Rules → trigger-check-news → Monitoring**:
@@ -167,6 +174,24 @@ JOIN option_snapshots d USING (item_id, ticker, contract_symbol)
 WHERE e.kind = 'entry' AND d.kind = 'd1' AND e.ask > 0
 ORDER BY e.taken_at DESC LIMIT 20;
 ```
+
+## Weekly report
+
+The `report` job runs every query in `sql/report/` and publishes the results as the run's **job summary** (open the run on the Actions tab), then pushes a one-line headline to ntfy that links to it. Sections:
+
+| Section | Question it answers |
+|---|---|
+| This week | Did the runs work, and how much was scored and alerted? |
+| By score | Do higher scores come before bigger moves (abnormal, vs SPY), and in the predicted direction? |
+| Does a higher score mean a bigger move? | Spearman rank correlation between score and move size |
+| By source / By ticker | Which sources and tickers produce useful alerts? |
+| Options on alerts (paper) | Long call or put in the predicted direction, and straddles: return from buying at the ask to selling at the bid 1 or 3 days later |
+| Implied vs realized move | Did the stock move more than options were pricing in? |
+| Worst misses this week | High scores that didn't move, and low scores that moved the most |
+
+The queries are plain SQL over two views from `migrations/004_report_views.sql`: `scored_outcomes` (every score with its news item and price outcome) and `option_entries` (entry quotes with tenor and nearness to the money). Each file can be pasted into the Neon SQL editor as is, after replacing `%(since)s` with a date such as `now() - interval '7 days'`. To add a section, add a numbered `.sql` file with a `-- title:` comment.
+
+Run it by hand from **Actions → Check news → Run workflow** with job `report`, or locally with `python -m alerts.report --dry-run`, which prints the report instead of publishing it.
 
 ## Customizing
 

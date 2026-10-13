@@ -30,9 +30,17 @@ class Notifier:
             raise RuntimeError("NTFY_TOPIC is not set")
 
     def send(self, alert: Alert) -> None:
-        payload = format_alert(alert)
+        self.publish(format_alert(alert))
+
+    def send_message(self, title: str, message: str, click: Optional[str] = None) -> None:
+        payload = {"title": title, "message": message, "tags": ["bar_chart"], "priority": 3}
+        if click:
+            payload["click"] = click
+        self.publish(payload)
+
+    def publish(self, payload: dict) -> None:
         if self.dry_run:
-            print(f"[dry-run] {payload['title']}\n          {payload['message'].splitlines()[0]}\n          {payload['click']}")
+            print(f"[dry-run] {payload['title']}\n          {payload['message'].splitlines()[0]}\n          {payload.get('click', '')}")
             return
         # JSON publishing avoids HTTP-header encoding issues with unicode titles.
         resp = requests.post(NTFY_SERVER, json={"topic": self.topic, **payload}, timeout=15)

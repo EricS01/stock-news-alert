@@ -8,12 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "alerts (every 30 min) or label (weekdays before the close)"
+        description: "alerts (every 30 min), label (weekdays before the close) or report (Saturdays)"
         type: choice
-        options: [alerts, label]
+        options: [alerts, label, report]
         default: alerts
       dry_run:
-        description: "Print alerts instead of pushing"
+        description: "Print instead of pushing or writing"
         type: boolean
         default: false
 
@@ -59,6 +59,7 @@ jobs:
           case "$JOB" in
             alerts) module=alerts.main ;;
             label)  module=alerts.labeler ;;
+            report) module=alerts.report ;;
             *) echo "unknown job: $JOB"; exit 1 ;;
           esac
           python -m "$module" $DRY_RUN
