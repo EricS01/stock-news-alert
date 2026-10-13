@@ -148,6 +148,26 @@ WHERE p.ret_1d IS NOT NULL
 GROUP BY s.score ORDER BY s.score;
 ```
 
+## Options snapshots (paper only)
+
+For every alert (score ≥ threshold), the app records near-the-money option quotes so that simple strategies can be evaluated on paper later. **It never places trades.**
+
+- **Which contracts:** the nearest expiry at least 2 days out, plus the expiry closest to 30 days out. For each, calls and puts at the two strikes nearest the stock price: 8 contracts per alert.
+- **When:** the `entry` snapshot is taken by the alert run itself if the market is open (9:35–15:58 ET). Otherwise the alert waits in `option_snapshot_queue` until the next run during market hours. The `label` run re-snapshots the same contracts 1 and 3 trading days later (`d1`, `d3`), shortly before the close. A missed day is skipped rather than taken late, so every `d1` and `d3` is comparable.
+- **Data:** yfinance option chains (bid, ask, last, implied volatility, volume, open interest; no greeks). On market holidays the quotes are stale, so snapshots wait. A queued entry that keeps failing is given up after 3 days, with the error in `last_error`.
+- Snapshot failures are logged in the run's `counts` and never fail the alert or label job.
+
+Paper P&L should enter at the **ask** and exit at the **bid**, never the mid-price:
+
+```sql
+SELECT e.ticker, e.expiry, e.strike, e."right", e.ask AS paid, d.bid AS sold_d1,
+       round((d.bid / e.ask - 1)::numeric, 3) AS return_d1
+FROM option_snapshots e
+JOIN option_snapshots d USING (item_id, ticker, contract_symbol)
+WHERE e.kind = 'entry' AND d.kind = 'd1' AND e.ask > 0
+ORDER BY e.taken_at DESC LIMIT 20;
+```
+
 ## Customizing
 
 Edit `watchlist.yaml`:
