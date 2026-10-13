@@ -22,6 +22,8 @@ from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from . import db
+from .options import snapshots
+from .options.yahoo import YahooChains
 from .prices import Bars, Closes, PriceSource, YahooPrices
 from .runs import RunFailed, record_run
 
@@ -171,6 +173,19 @@ def label_all(conn, source: PriceSource, now: Optional[datetime] = None, dry_run
     }
 
 
+def snapshot_options(conn, prices: PriceSource, chains, now: datetime) -> dict:
+    """Entry snapshots still queued, then +1/+3 trading day re-snapshots. Never raises."""
+    today = now.astimezone(NY).date()
+    counts = {"entries": snapshots.guarded("entries", snapshots.take_entries, conn, chains, now)}
+    try:
+        trading_days = sorted(prices.daily_closes(BENCHMARK, today - timedelta(days=15)))
+    except Exception as e:
+        log.warning("could not get trading days for option follow-ups: %s", e)
+        return {**counts, "follow_ups": {"error": str(e)}}
+    counts["follow_ups"] = snapshots.guarded("follow-ups", snapshots.take_follow_ups, conn, chains, trading_days, now)
+    return counts
+
+
 def run(dry_run: bool = False) -> None:
     if not os.environ.get("DATABASE_URL"):
         raise RunFailed("DATABASE_URL is not set")
@@ -178,7 +193,13 @@ def run(dry_run: bool = False) -> None:
         if dry_run:  # computes and logs, writes nothing
             log.info("dry run counts: %s", label_all(conn, YahooPrices(), dry_run=True))
         else:
-            record_run(conn, JOB, lambda: label_all(conn, YahooPrices()))
+            def work() -> dict:
+                prices = YahooPrices()
+                counts = label_all(conn, prices)
+                counts["options"] = snapshot_options(conn, prices, YahooChains(), datetime.now(timezone.utc))
+                return counts
+
+            record_run(conn, JOB, work)
 
 
 if __name__ == "__main__":

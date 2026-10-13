@@ -177,6 +177,75 @@ def upsert_outcomes(conn: psycopg.Connection, rows: List[dict]) -> None:
         )
 
 
+# --- option snapshots -------------------------------------------------------
+
+
+def enqueue_snapshots(conn: psycopg.Connection, pairs: List[tuple]) -> None:
+    """Queue (item_id, ticker) pairs for an entry options snapshot."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO option_snapshot_queue (item_id, ticker) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            pairs,
+        )
+
+
+def open_snapshot_queue(conn: psycopg.Connection) -> List[tuple]:
+    """Rows: (item_id, ticker, queued_at), oldest first."""
+    return conn.execute(
+        "SELECT item_id, ticker, queued_at FROM option_snapshot_queue WHERE done_at IS NULL ORDER BY queued_at"
+    ).fetchall()
+
+
+def finish_snapshot_queue(conn: psycopg.Connection, done: List[tuple], failed: List[tuple]) -> None:
+    """`done`: (item_id, ticker). `failed`: (item_id, ticker, error, give_up)."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "UPDATE option_snapshot_queue SET done_at = now(), attempts = attempts + 1, last_error = NULL"
+            " WHERE item_id = %s AND ticker = %s",
+            done,
+        )
+        cur.executemany(
+            """
+            UPDATE option_snapshot_queue
+            SET attempts = attempts + 1, last_error = %s, done_at = CASE WHEN %s THEN now() END
+            WHERE item_id = %s AND ticker = %s
+            """,
+            [(error, give_up, item_id, ticker) for item_id, ticker, error, give_up in failed],
+        )
+
+
+SNAPSHOT_COLUMNS = (
+    "item_id", "ticker", "contract_symbol", "expiry", "strike", "right", "kind", "taken_at",
+    "underlying_price", "bid", "ask", "last", "iv", "volume", "open_interest",
+)
+
+
+def insert_option_snapshots(conn: psycopg.Connection, rows: List[dict]) -> None:
+    cols = ", ".join(f'"{c}"' for c in SNAPSHOT_COLUMNS)
+    values = ", ".join(f"%({c})s" for c in SNAPSHOT_COLUMNS)
+    with conn.cursor() as cur:
+        cur.executemany(
+            f"INSERT INTO option_snapshots ({cols}) VALUES ({values})"
+            " ON CONFLICT (item_id, ticker, contract_symbol, kind) DO NOTHING",
+            rows,
+        )
+
+
+def recent_option_snapshots(conn: psycopg.Connection, since: datetime) -> List[tuple]:
+    """Snapshots for entries taken since `since`.
+    Rows: (item_id, ticker, kind, contract_symbol, expiry, taken_at)."""
+    return conn.execute(
+        """
+        SELECT o.item_id, o.ticker, o.kind, o.contract_symbol, o.expiry, o.taken_at
+        FROM option_snapshots o
+        WHERE (o.item_id, o.ticker) IN (
+            SELECT item_id, ticker FROM option_snapshots WHERE kind = 'entry' AND taken_at >= %s
+        )
+        """,
+        (since,),
+    ).fetchall()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Database utilities")
     parser.add_argument("command", choices=["migrate"])

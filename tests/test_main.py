@@ -125,3 +125,9 @@ def test_record_run_ok(conn):
     record_run(conn, "alerts", lambda: {"pairs": 0})
     assert conn.execute("SELECT status FROM runs").fetchone() == ("ok",)
     assert db.last_ok_run_start(conn, "alerts") is not None
+
+
+def test_alerts_at_threshold_are_queued_for_options(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    _process(conn, _items(), scorer_returning({("hn:1", "NVDA"): 4, ("hn:2", "AAPL"): 3}))
+    assert [r[:2] for r in db.open_snapshot_queue(conn)] == [("hn:1", "NVDA")]
