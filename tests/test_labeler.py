@@ -3,7 +3,8 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from alerts import db
-from alerts.labeler import NY, Pending, final_trading_days, find_entry, label, label_all
+from alerts.labeler import (NY, ContextPending, Pending, entry_context, final_trading_days, find_entry, label,
+                            label_all)
 from alerts.models import NewsItem
 from alerts.runs import RunFailed
 
@@ -76,6 +77,41 @@ def test_gives_up_after_30_days():
     assert row["status"] == "expired" and row["entry_ts"] is None
 
 
+def _context(published_at, scored_at=None, now=AFTER_ALL_CLOSES):
+    c = ContextPending("hn:1", "NVDA", scored_at or ny(DAYS[-1], 10, 0), published_at)
+    return entry_context(c, STOCK_BARS, SPY_BARS, STOCK_CLOSES, SPY_CLOSES, now)
+
+
+def test_context_is_the_bar_after_publication_and_the_close_before_it():
+    row = _context(ny(DAYS[1], 10, 2))  # Friday
+    assert row["pub_ts"] == ny(DAYS[1], 10, 5)
+    assert (row["pub_price"], row["spy_pub_price"]) == (101.0, 500.0)
+    assert (row["prev_close"], row["spy_prev_close"]) == (110.0, 505.0)  # Thursday
+    assert row["context_status"] == "complete"
+
+
+def test_published_over_the_weekend_uses_monday_open_and_friday_close():
+    row = _context(ny(date(2026, 10, 10), 12, 0))
+    assert row["pub_ts"] == ny(DAYS[2], 9, 30) and row["pub_price"] == 102.0
+    assert row["prev_close"] == 111.0
+
+
+def test_publication_after_the_first_score_uses_the_score_time():
+    row = _context(ny(DAYS[3], 10, 2), scored_at=ny(DAYS[1], 10, 2))
+    assert row["pub_ts"] == ny(DAYS[1], 10, 5)
+
+
+def test_context_waits_for_bars_that_dont_exist_yet():
+    row = _context(ny(DAYS[-1], 16, 30), scored_at=ny(DAYS[-1], 16, 40))  # after the last bar
+    assert row["pub_ts"] is None and row["context_status"] == "pending"
+
+
+def test_context_unavailable_without_publication_time_or_once_bars_age_out():
+    assert _context(None)["context_status"] == "unavailable"
+    old = _context(ny(DAYS[1], 10, 2), now=AFTER_ALL_CLOSES + timedelta(days=60))
+    assert old["context_status"] == "unavailable" and old["pub_ts"] is None  # never matched to a later bar
+
+
 class FakePrices:
     def __init__(self, fail=()):
         self.fail = set(fail)
@@ -94,9 +130,9 @@ class FakePrices:
         return SPY_CLOSES if ticker == "SPY" else STOCK_CLOSES
 
 
-def _seed(conn, scored_at):
+def _seed(conn, scored_at, published_at=None):
     db.ensure_prompt_version(conn, "v1", "m", "p")
-    db.insert_items(conn, [NewsItem(id="hn:1", source="hackernews", title="t", url="u")])
+    db.insert_items(conn, [NewsItem(id="hn:1", source="hackernews", title="t", url="u", published_at=published_at)])
     rows = [dict(item_id="hn:1", ticker=t, prompt_version="v1", score=3, direction="neutral",
                  reason="", floor_applied=False, alerted=False) for t in ("NVDA", "AAPL")]
     db.insert_scores(conn, rows)
@@ -137,3 +173,37 @@ def test_dry_run_writes_nothing(conn):
     _seed(conn, ny(DAYS[0], 10, 2))
     label_all(conn, FakePrices(), now=AFTER_ALL_CLOSES, dry_run=True)
     assert conn.execute("SELECT count(*) FROM price_outcomes").fetchone()[0] == 0
+
+
+CONTEXT_SQL = "SELECT pub_ts, pub_price, prev_close, spy_prev_close, context_status FROM price_outcomes WHERE ticker = 'NVDA'"
+
+
+def test_label_all_captures_context_in_the_same_run(conn):
+    _seed(conn, ny(DAYS[1], 10, 20), published_at=ny(DAYS[1], 10, 2))
+    counts = label_all(conn, FakePrices(), now=AFTER_ALL_CLOSES)
+    assert counts["context"] == {"complete": 2, "pending": 0, "unavailable": 0}
+    assert conn.execute(CONTEXT_SQL).fetchone() == (ny(DAYS[1], 10, 5), 101.0, 110.0, 505.0, "complete")
+    assert db.pending_context(conn) == []
+
+
+def test_finished_rows_are_backfilled_without_touching_returns(conn):
+    _seed(conn, ny(DAYS[1], 10, 20), published_at=ny(DAYS[1], 10, 2))
+    label_all(conn, FakePrices(), now=AFTER_ALL_CLOSES)
+    returns = conn.execute("SELECT ret_1d, ret_3d, status FROM price_outcomes ORDER BY ticker").fetchall()
+    # as existing rows look right after the migration
+    conn.execute("UPDATE price_outcomes SET pub_ts = NULL, pub_price = NULL, spy_pub_price = NULL,"
+                 " prev_close = NULL, spy_prev_close = NULL, context_status = 'pending'")
+
+    counts = label_all(conn, FakePrices(fail={"AAPL"}), now=AFTER_ALL_CLOSES)
+    assert counts["context"]["complete"] == 1
+    assert conn.execute(CONTEXT_SQL).fetchone()[-1] == "complete"
+    assert [r[0] for r in db.pending_context(conn)] == ["hn:1"]  # AAPL retried next run
+    assert conn.execute("SELECT ret_1d, ret_3d, status FROM price_outcomes ORDER BY ticker").fetchall() == returns
+
+
+def test_aging_out_keeps_what_was_found(conn):
+    _seed(conn, ny(DAYS[1], 10, 20), published_at=ny(DAYS[1], 10, 2))
+    label_all(conn, FakePrices(), now=AFTER_ALL_CLOSES)
+    conn.execute("UPDATE price_outcomes SET prev_close = NULL, context_status = 'pending'")
+    label_all(conn, FakePrices(), now=AFTER_ALL_CLOSES + timedelta(days=60))
+    assert conn.execute(CONTEXT_SQL).fetchone() == (ny(DAYS[1], 10, 5), 101.0, None, 505.0, "unavailable")
