@@ -128,13 +128,26 @@ def insert_scores(conn: psycopg.Connection, rows: List[dict]) -> None:
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO scores (item_id, ticker, prompt_version, score, direction, reason, floor_applied, alerted)
+            INSERT INTO scores (item_id, ticker, prompt_version, score, direction, reason, floor_applied,
+                                alerted, suppressed)
             VALUES (%(item_id)s, %(ticker)s, %(prompt_version)s, %(score)s, %(direction)s, %(reason)s,
-                    %(floor_applied)s, %(alerted)s)
+                    %(floor_applied)s, %(alerted)s, %(suppressed)s)
             ON CONFLICT (item_id, ticker, prompt_version) DO NOTHING
             """,
-            rows,
+            [{"suppressed": None, **r} for r in rows],
         )
+
+
+def recent_alerts(conn: psycopg.Connection, since: datetime) -> List[tuple]:
+    """Alerts pushed since `since`. Rows: (ticker, title, score, direction)."""
+    return conn.execute(
+        """
+        SELECT s.ticker, n.title, s.score, s.direction
+        FROM scores s JOIN news_items n ON n.id = s.item_id
+        WHERE s.alerted AND s.scored_at >= %s
+        """,
+        (since,),
+    ).fetchall()
 
 
 # --- price outcomes ---------------------------------------------------------

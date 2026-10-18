@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import html
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -24,6 +26,15 @@ WORKERS = 8  # two feeds per ticker, fetched concurrently
 TIMEOUT = 15
 
 
+TAG = re.compile(r"<[^>]+>")
+
+
+def plain_text(summary: str) -> str:
+    """Feed summaries are often HTML (Google News wraps each one in a news.google.com
+    link, which made the "Google" alias match nearly every item). Keep only the text."""
+    return " ".join(html.unescape(TAG.sub(" ", summary or "")).split())
+
+
 def _entry_time(entry) -> Optional[float]:
     t = entry.get("published_parsed") or entry.get("updated_parsed")
     return calendar.timegm(t) if t else None
@@ -42,7 +53,7 @@ def parse_feed(feed, ticker: str, since: float) -> List[NewsItem]:
                 source="news",
                 title=title,
                 url=link,
-                text=e.get("summary", ""),
+                text=plain_text(e.get("summary", "")),
                 published_at=datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None,
                 tickers=[ticker],  # per-ticker feed: the ticker is known even if the headline omits it
             )

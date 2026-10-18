@@ -181,15 +181,18 @@ The `report` job runs every query in `sql/report/` and publishes the results as 
 
 | Section | Question it answers |
 |---|---|
-| This week | Did the runs work, and how much was scored and alerted? |
-| By score | Do higher scores come before bigger moves (abnormal, vs SPY), and in the predicted direction? |
+| This week | Did the runs work, and how much was scored, pushed and suppressed? |
+| By score | Do higher scores come before bigger moves (abnormal, vs SPY), and in the predicted direction? With 95% ranges. |
+| Better than guessing? | Does the scorer beat always guessing bullish (or bearish) on the same days? |
 | Does a higher score mean a bigger move? | Spearman rank correlation between score and move size |
 | By source / By ticker | Which sources and tickers produce useful alerts? |
 | Options on alerts (paper) | Long call or put in the predicted direction, and straddles: return from buying at the ask to selling at the bid 1 or 3 days later |
 | Implied vs realized move | Did the stock move more than options were pricing in? |
-| Worst misses this week | High scores that didn't move, and low scores that moved the most |
+| Worst misses this week | Days scored high that didn't move, and days scored low that moved the most |
 
-The queries are plain SQL over two views from `migrations/004_report_views.sql`: `scored_outcomes` (every score with its news item and price outcome) and `option_entries` (entry quotes with tenor and nearness to the money). Each file can be pasted into the Neon SQL editor as is, after replacing `%(since)s` with a date such as `now() - interval '7 days'`. To add a section, add a numbered `.sql` file with a `-- title:` comment.
+**Results are counted per ticker-day**, meaning one stock on one trading day, not per article. A big story is syndicated dozens of times, but the stock only moves once, so counting articles would let one event dominate the numbers. The view `ticker_days` (migration 005) groups each stock's articles by the trading day of entry and represents the day by its highest-scored article. Hit rates come with a 95% Wilson confidence interval (the SQL functions `wilson_low` and `wilson_high`), so you can tell a real difference from noise.
+
+The queries are plain SQL over views from `migrations/004_report_views.sql` and `005_events_and_suppression.sql`: `scored_outcomes` (every score with its news item and price outcome) and `option_entries` (entry quotes with tenor and nearness to the money). Each file can be pasted into the Neon SQL editor as is, after replacing `%(since)s` with a date such as `now() - interval '7 days'`. To add a section, add a numbered `.sql` file with a `-- title:` comment.
 
 Run it by hand from **Actions → Check news → Run workflow** with job `report`, or locally with `python -m alerts.report --dry-run`, which prints the report instead of publishing it.
 
@@ -204,7 +207,14 @@ sources:
 stocks:
   AMD: [Advanced Micro Devices, Lisa Su]   # ticker: [aliases]
 cashtag_only: [CRM, COST]                  # tickers that are also common words
+alert_cooldown_hours: 12                   # see "Fewer, better pushes" below
 ```
+
+**Fewer, better pushes.** Anything scored at or above `threshold` is pushed unless:
+- it's the same story (headline ignoring the " - Publisher" suffix, case and punctuation) as one already pushed for that ticker, or
+- the ticker already had a push in the same direction with an equal or higher score within `alert_cooldown_hours` (default 12).
+
+Held-back alerts are still scored and stored, with `scores.suppressed` set to `duplicate` or `cooldown`. Option snapshots are only taken for pushed alerts.
 
 Tickers match as `$AMD` or a standalone uppercase `AMD`. Aliases match case-insensitively as whole words. Tickers listed under `cashtag_only` match only as `$CRM`, so "CRM software" or "LOW COST" don't count; their aliases (Salesforce, Costco) still match. For tickers outside the default list, the SEC source looks up the CIK automatically.
 

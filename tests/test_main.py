@@ -131,3 +131,38 @@ def test_alerts_at_threshold_are_queued_for_options(conn):
     db.ensure_prompt_version(conn, "v1", "m", "p")
     _process(conn, _items(), scorer_returning({("hn:1", "NVDA"): 4, ("hn:2", "AAPL"): 3}))
     assert [r[:2] for r in db.open_snapshot_queue(conn)] == [("hn:1", "NVDA")]
+
+
+def _story(id, title):
+    return NewsItem(id=id, source="news", title=title, url=id)
+
+
+def test_syndicated_story_is_pushed_once(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    items = [_story("n:1", "Nvidia under DOJ probe - Reuters"), _story("n:2", "Nvidia under DOJ probe - CNBC")]
+    notifier = FakeNotifier()
+    counts = _process(conn, items, scorer_returning({("n:1", "NVDA"): 4, ("n:2", "NVDA"): 5}), notifier)
+    assert notifier.sent == [("n:2", "NVDA")]  # the higher score wins
+    assert counts["alerts"] == 1 and counts["suppressed_duplicate"] == 1
+    rows = conn.execute("SELECT item_id, alerted, suppressed FROM scores ORDER BY item_id").fetchall()
+    assert rows == [("n:1", False, "duplicate"), ("n:2", True, None)]
+    assert [r[:2] for r in db.open_snapshot_queue(conn)] == [("n:2", "NVDA")]  # only the pushed one
+
+
+def test_cooldown_applies_across_runs(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    _process(conn, [_story("n:1", "Nvidia beats estimates")], scorer_returning({("n:1", "NVDA"): 4}))
+    notifier = FakeNotifier()
+    counts = _process(conn, [_story("n:2", "Nvidia raises guidance"), _story("n:3", "Nvidia announces buyback")],
+                      scorer_returning({("n:2", "NVDA"): 4, ("n:3", "NVDA"): 5}), notifier)
+    assert notifier.sent == [("n:3", "NVDA")]  # a higher score still gets through
+    assert counts["suppressed_cooldown"] == 1
+
+
+def test_cooldown_expires(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    _process(conn, [_story("n:1", "Nvidia beats estimates")], scorer_returning({("n:1", "NVDA"): 4}))
+    conn.execute("UPDATE scores SET scored_at = now() - interval '13 hours'")
+    notifier = FakeNotifier()
+    _process(conn, [_story("n:2", "Nvidia raises guidance")], scorer_returning({("n:2", "NVDA"): 4}), notifier)
+    assert notifier.sent == [("n:2", "NVDA")]

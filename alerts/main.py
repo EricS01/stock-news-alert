@@ -18,6 +18,7 @@ from .options.yahoo import YahooChains
 from .runs import RunFailed, record_run
 from .scorer import MODEL, PROMPT_VERSION, SYSTEM, ScoreResult, Scorer
 from .sources import hackernews, news_feeds, reddit, sec_edgar
+from .suppress import Suppressor
 
 log = logging.getLogger("alerts")
 
@@ -92,7 +93,16 @@ def score_pairs(pairs, dry_run: bool) -> ScoreResult:
     raise RunFailed("ANTHROPIC_API_KEY is not set")
 
 
-def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, scorer, threshold: int, dry_run: bool = False) -> dict:
+def process(
+    conn,
+    items: List[NewsItem],
+    matcher: Matcher,
+    notifier: Notifier,
+    scorer,
+    threshold: int,
+    dry_run: bool = False,
+    cooldown: timedelta = timedelta(hours=12),
+) -> dict:
     """Score new items, push alerts, and record items and scores. Returns run counts.
 
     An item is only written to news_items (and so counts as processed) once all of
@@ -112,18 +122,29 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
     if result.all_failed:
         raise RunFailed(f"all {result.batches} scoring batches failed")
 
-    sent: Dict[tuple, bool] = {}
-    notify_failures = 0
     for alert in result.alerts:
         floor = sec_edgar.score_floor(alert.item)
         alert.floor_applied = floor > alert.score
         alert.score = max(alert.score, floor)
         log.info("%s %d/5 %s", alert.ticker, alert.score, alert.item.title)
-        if alert.score < threshold:
+
+    recent = db.recent_alerts(conn, datetime.now(timezone.utc) - cooldown) if conn is not None else []
+    suppressor = Suppressor(recent)
+    sent: Dict[tuple, bool] = {}
+    suppressed: Dict[tuple, str] = {}
+    notify_failures = 0
+    # Highest scores first, so the strongest version of a story is the one pushed.
+    for alert in sorted((a for a in result.alerts if a.score >= threshold), key=lambda a: -a.score):
+        key = (alert.item.id, alert.ticker)
+        reason = suppressor.reason(alert)
+        if reason:
+            suppressed[key] = reason
+            log.info("not pushed (%s): %s %s", reason, alert.ticker, alert.item.title)
             continue
         try:
             notifier.send(alert)
-            sent[(alert.item.id, alert.ticker)] = True
+            sent[key] = True
+            suppressor.pushed(alert)
         except Exception as e:  # keep going so the rest are still sent and recorded
             log.error("push failed for %s %s: %s", alert.ticker, alert.item.id, e)
             notify_failures += 1
@@ -141,11 +162,12 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
                 "reason": a.reason,
                 "floor_applied": a.floor_applied,
                 "alerted": sent.get((a.item.id, a.ticker), False),
+                "suppressed": suppressed.get((a.item.id, a.ticker)),
             }
             for a in result.alerts
         ]
         t = time.monotonic()
-        snapshot = [(a.item.id, a.ticker) for a in result.alerts if a.score >= threshold]
+        snapshot = list(sent)  # only pushed alerts: suppressed ones would repeat the same quotes
         with conn.transaction():  # all or nothing: a failed write leaves every item to retry
             db.insert_items(conn, done)
             db.insert_scores(conn, scores)
@@ -161,6 +183,8 @@ def process(conn, items: List[NewsItem], matcher: Matcher, notifier: Notifier, s
         "scored": len(result.alerts),
         "failed_pairs": len(result.failed),
         "alerts": len(sent),
+        "suppressed_duplicate": sum(r == "duplicate" for r in suppressed.values()),
+        "suppressed_cooldown": sum(r == "cooldown" for r in suppressed.values()),
         "notify_failures": notify_failures,
         "score_s": score_s,
         "write_s": write_s,
@@ -189,13 +213,15 @@ def run(dry_run: bool = False) -> None:
     try:
         if dry_run:  # dry runs read the database for dedupe but never write
             items = collect(cfg, fetch_since(conn))
-            process(conn, items, matcher, notifier, scorer, threshold, dry_run=True)
+            process(conn, items, matcher, notifier, scorer, threshold, dry_run=True,
+                    cooldown=timedelta(hours=cfg.alert_cooldown_hours))
         else:
             def work() -> dict:
                 db.ensure_prompt_version(conn, PROMPT_VERSION, MODEL, SYSTEM)
                 fetch_s: Dict[str, float] = {}
                 items = collect(cfg, fetch_since(conn), fetch_s)
-                counts = process(conn, items, matcher, notifier, scorer, threshold)
+                counts = process(conn, items, matcher, notifier, scorer, threshold,
+                                 cooldown=timedelta(hours=cfg.alert_cooldown_hours))
                 counts["fetch_s"] = fetch_s
                 t = time.monotonic()
                 counts["options"] = snapshots.guarded("entries", snapshots.take_entries, conn, YahooChains(), datetime.now(timezone.utc))

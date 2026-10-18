@@ -21,3 +21,13 @@ def test_parse_feed_filters_old_and_pretags_ticker():
     assert items[0].tickers == ["NVDA"]
     # matcher keeps the pre-tagged ticker even though the headline doesn't name it
     assert Matcher({"NVDA": ["Nvidia"], "AAPL": ["Apple"]}).match(items[0]) == ["NVDA"]
+
+
+def test_summary_html_is_stripped_so_google_links_dont_match():
+    from alerts.sources.news_feeds import plain_text
+
+    summary = ('<a href="https://news.google.com/rss/articles/x?oc=5" target="_blank">Apple leads Tesla</a>'
+               '&nbsp;&nbsp;<font color="#6f6f6f">Opening Bell</font>')
+    assert plain_text(summary) == "Apple leads Tesla Opening Bell"
+    m = Matcher({"GOOGL": ["Google"], "AAPL": ["Apple"]})
+    assert m.match_text(plain_text(summary)) == ["AAPL"]

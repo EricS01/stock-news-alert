@@ -26,13 +26,13 @@ def test_queries_have_no_literal_percent():
         assert "%" not in path.read_text().replace("%(since)s", ""), path.name
 
 
-def _outcome(conn, item_id, ticker, score, direction, abn_1d, alerted=False):
+def _outcome(conn, item_id, ticker, score, direction, abn_1d, alerted=False, entry_offset=timedelta(0)):
     db.insert_items(conn, [NewsItem(id=item_id, source="news", title=f"title {item_id}", url="u")])
     db.insert_scores(conn, [dict(item_id=item_id, ticker=ticker, prompt_version="v1", score=score, direction=direction,
                                  reason="", floor_applied=False, alerted=alerted)])
     conn.execute("UPDATE scores SET scored_at = %s WHERE item_id = %s", (NOW - timedelta(days=2), item_id))
     db.upsert_outcomes(conn, [dict(item_id=item_id, ticker=ticker, first_scored_at=NOW - timedelta(days=2),
-                                   entry_ts=NOW - timedelta(days=2), entry_price=100.0, spy_entry_price=500.0,
+                                   entry_ts=NOW - timedelta(days=2) + entry_offset, entry_price=100.0, spy_entry_price=500.0,
                                    ret_1d=abn_1d, ret_3d=abn_1d * 2, ret_5d=None,
                                    spy_ret_1d=0.0, spy_ret_3d=0.0, spy_ret_5d=None, status="pending")])
 
@@ -56,13 +56,29 @@ def test_by_score_and_correlation(data):
     sections = run_sections(data, SINCE)
     by_score = {r[0]: r for r in _section(sections, "By score").rows}
     assert by_score[4][3] == pytest.approx(2.0)  # avg |abn 1d| in percent
-    assert by_score[4][5] == 100 and by_score[5][5] == 0  # hit rate 1d
-    assert by_score[1][5] is None  # neutral calls have no direction to hit
+    assert by_score[4][6] == 100 and by_score[5][6] == 0  # hit rate 1d
+    assert by_score[4][7] == "21–100"  # Wilson 95% range for 1 hit out of 1
+    assert by_score[1][6] is None  # neutral calls have no direction to hit
     rho = {r[0]: r for r in _section(sections, "Does a higher score").rows}
     assert rho["1 day"][1] == 4 and float(rho["1 day"][2]) == pytest.approx(1.0)
     misses = _section(sections, "Worst misses").rows
     assert [(r[0], r[2]) for r in misses] == [("false alarm", "MSFT"), ("false alarm", "TSLA"),
                                               ("missed mover", "AAPL"), ("missed mover", "NVDA")]
+
+
+def test_articles_about_one_stock_on_one_day_count_once(data):
+    # Nine more MSFT stories the same day, all scored 4 and "right": still one ticker-day.
+    for i in range(9):
+        _outcome(data, f"c{i}", "MSFT", 4, "bullish", 0.02, alerted=True, entry_offset=timedelta(minutes=5 * (i + 1)))
+    by_score = {r[0]: r for r in _section(run_sections(data, SINCE), "By score").rows}
+    assert by_score[4][1] == 1 and by_score[4][2] == 10  # ticker-days, articles
+
+
+def test_baseline_compares_against_always_bullish(data):
+    rows = {r[0]: r for r in _section(run_sections(data, SINCE), "Better than guessing").rows}
+    # Score 4+ directional days: MSFT bullish +2% (hit), TSLA bearish +5% (miss).
+    assert rows["scorer's calls"][1:3] == (2, 50)
+    assert rows["always bullish"][2] == 100 and rows["always bearish"][2] == 0
 
 
 def _option(conn, item_id, ticker, right, strike, kind, bid, ask, expiry=date(2026, 10, 23), spot=100.4):
@@ -106,8 +122,9 @@ def test_build_and_publish_writes_summary_and_pushes(data, tmp_path, monkeypatch
     assert text.startswith("# Weekly research report") and "## By score" in text and "| score |" in text
     assert counts["sections"] == len(list(REPORT_DIR.glob("[0-9][0-9]_*.sql")))
     title, message, click = notifier.messages[0]
-    assert title == "Weekly report: 4 scores, 2 alerts"
-    assert "3.5% for scores 4-5" in message and "Alerts moving the predicted way: 50%" in message
+    assert title == "Weekly report: 4 scores, 2 pushed"
+    assert "3.5% on days scored 4-5" in message
+    assert "Direction right on 50% of 2 days scored 4+ (95% range 9-91%)" in message
     assert click == "https://github.com/o/r/actions/runs/42"
 
 

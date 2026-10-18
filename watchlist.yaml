@@ -3,6 +3,10 @@
 # Tickers listed under cashtag_only match only as cashtags, because the bare
 # word is common in other contexts ("CRM software", "LOW COST").
 threshold: 4  # minimum impact score (1-5) to send a push
+# After a push, more alerts for that ticker in the same direction are recorded but
+# not pushed for this many hours, unless they score higher. Repeats of a story
+# already pushed are never pushed.
+alert_cooldown_hours: 12
 
 sources:
   hackernews: true
