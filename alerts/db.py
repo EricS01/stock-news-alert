@@ -200,6 +200,39 @@ def upsert_outcomes(conn: psycopg.Connection, rows: List[dict]) -> None:
         )
 
 
+def pending_context(conn: psycopg.Connection) -> List[tuple]:
+    """Scored (item, ticker) pairs whose publication context hasn't been captured:
+    no outcome row yet, or one with context still pending.
+
+    Rows: (item_id, ticker, first_scored_at, published_at); published_at may be NULL.
+    """
+    return conn.execute(
+        """
+        SELECT s.item_id, s.ticker, min(s.scored_at), n.published_at
+        FROM scores s
+        JOIN news_items n ON n.id = s.item_id
+        LEFT JOIN price_outcomes p USING (item_id, ticker)
+        WHERE p.context_status IS NULL OR p.context_status = 'pending'
+        GROUP BY s.item_id, s.ticker, n.published_at
+        ORDER BY 3
+        """
+    ).fetchall()
+
+
+CONTEXT_COLUMNS = ("pub_ts", "pub_price", "spy_pub_price", "prev_close", "spy_prev_close", "context_status")
+
+
+def update_context(conn: psycopg.Connection, rows: List[dict]) -> None:
+    # COALESCE: a value found earlier is kept if a later run (or aging out) finds nothing
+    sets = ", ".join(f"{c} = COALESCE(%({c})s, {c})" for c in CONTEXT_COLUMNS[:-1])
+    sets += ", context_status = %(context_status)s"
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            f"UPDATE price_outcomes SET {sets} WHERE item_id = %(item_id)s AND ticker = %(ticker)s",
+            rows,
+        )
+
+
 # --- option snapshots -------------------------------------------------------
 
 
