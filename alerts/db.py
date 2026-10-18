@@ -96,18 +96,28 @@ def existing_item_ids(conn: psycopg.Connection, ids: Iterable[str]) -> Set[str]:
     return {r[0] for r in rows}
 
 
-def ensure_prompt_version(conn: psycopg.Connection, version: str, model: str, system_prompt: str) -> None:
-    """Record the rubric that's running. New versions start active only if none is."""
+def ensure_prompt_version(
+    conn: psycopg.Connection, version: str, model: str, system_prompt: str, notes: str = ""
+) -> None:
+    """Record a rubric. New versions start active only if none is."""
     conn.execute(
         """
-        INSERT INTO prompt_versions (id, model, system_prompt, status)
+        INSERT INTO prompt_versions (id, model, system_prompt, status, notes)
         VALUES (%s, %s, %s,
                 CASE WHEN EXISTS (SELECT 1 FROM prompt_versions WHERE status = 'active')
-                     THEN 'shadow' ELSE 'active' END)
+                     THEN 'shadow' ELSE 'active' END,
+                nullif(%s, ''))
         ON CONFLICT (id) DO NOTHING
         """,
-        (version, model, system_prompt),
+        (version, model, system_prompt, notes),
     )
+
+
+def prompt_versions(conn: psycopg.Connection) -> List[tuple]:
+    """Rows: (id, model, system_prompt, notes, status), oldest first."""
+    return conn.execute(
+        "SELECT id, model, system_prompt, coalesce(notes, ''), status FROM prompt_versions ORDER BY created_at, id"
+    ).fetchall()
 
 
 def insert_items(conn: psycopg.Connection, items: List[NewsItem]) -> None:

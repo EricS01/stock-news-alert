@@ -189,12 +189,47 @@ The `report` job runs every query in `sql/report/` and publishes the results as 
 | Options on alerts (paper) | Long call or put in the predicted direction, and straddles: return from buying at the ask to selling at the bid 1 or 3 days later |
 | Implied vs realized move | Did the stock move more than options were pricing in? |
 | Worst misses this week | Days scored high that didn't move, and days scored low that moved the most |
+| Rubric comparison | Active vs shadow rubrics on the same articles (see below) |
 
 **Results are counted per ticker-day**, meaning one stock on one trading day, not per article. A big story is syndicated dozens of times, but the stock only moves once, so counting articles would let one event dominate the numbers. The view `ticker_days` (migration 005) groups each stock's articles by the trading day of entry and represents the day by its highest-scored article. Hit rates come with a 95% Wilson confidence interval (the SQL functions `wilson_low` and `wilson_high`), so you can tell a real difference from noise.
 
 The queries are plain SQL over views from `migrations/004_report_views.sql` and `005_events_and_suppression.sql`: `scored_outcomes` (every score with its news item and price outcome) and `option_entries` (entry quotes with tenor and nearness to the money). Each file can be pasted into the Neon SQL editor as is, after replacing `%(since)s` with a date such as `now() - interval '7 days'`. To add a section, add a numbered `.sql` file with a `-- title:` comment.
 
 Run it by hand from **Actions → Check news → Run workflow** with job `report`, or locally with `python -m alerts.report --dry-run`, which prints the report instead of publishing it.
+
+## Improving the scorer: shadow rubrics
+
+The scoring prompt (the "rubric") is versioned. Each version is a file in `prompts/`:
+
+```
+model: claude-haiku-5-5
+notes: What this version changes, and why.
+---
+<the system prompt>
+```
+
+Every alerts run copies new files into the `prompt_versions` table and then scores the same news with the **active** rubric and every **shadow** rubric. Only the active rubric pushes alerts; shadow scores are stored next to it (same `item_id` and `ticker`, a different `prompt_version`), so both are judged against the same price outcomes. A shadow roughly doubles Claude scoring cost while it runs.
+
+**Procedure for a change:**
+1. Add `prompts/vN.md` with **one** change, the same model, and a `notes:` line saying what changed. Never edit an existing file: recorded versions are immutable, and the run logs a warning if a file and its database row differ.
+2. Merge it. The next alerts run records it as `shadow`.
+3. Wait for several weeks of data, then read the report's **Rubric comparison** section. It only uses articles every rubric scored, per ticker-day. A better rubric gives 4+ to fewer days, and those days move more, and in the predicted direction more often, than the rest. Check the hit-rate ranges against each other and against **Better than guessing?**.
+4. Decide, using the production `DATABASE_URL`:
+   ```bash
+   python -m alerts.rubrics status
+   ```
+   ```bash
+   python -m alerts.rubrics promote v2
+   ```
+   `promote` makes the shadow active and retires the old active rubric in one transaction. To drop a shadow that didn't help, use `python -m alerts.rubrics retire v2` instead. The same thing in SQL, in the Neon editor:
+   ```sql
+   BEGIN;
+   UPDATE prompt_versions SET status = 'retired' WHERE status = 'active';
+   UPDATE prompt_versions SET status = 'active' WHERE id = 'v2';
+   COMMIT;
+   ```
+
+Only judge a shadow on data collected after it was created; the comparison does this automatically, because a shadow only scores news that arrives after it.
 
 ## Customizing
 

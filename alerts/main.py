@@ -6,9 +6,9 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
-from . import db
+from . import db, rubrics
 from .config import load_config
 from .matcher import Matcher
 from .models import Alert, NewsItem
@@ -16,7 +16,8 @@ from .notifier import Notifier
 from .options import snapshots
 from .options.yahoo import YahooChains
 from .runs import RunFailed, record_run
-from .scorer import MODEL, PROMPT_VERSION, SYSTEM, ScoreResult, Scorer
+from .rubrics import Rubric
+from .scorer import ScoreResult, Scorer
 from .sources import hackernews, news_feeds, reddit, sec_edgar
 from .suppress import Suppressor
 
@@ -84,13 +85,43 @@ def fetch_since(conn) -> Optional[float]:
     return max((last - OVERLAP).timestamp(), floor)
 
 
-def score_pairs(pairs, dry_run: bool) -> ScoreResult:
+ScoreFn = Callable[[list], ScoreResult]
+
+
+def make_scorer(rubric: Rubric, dry_run: bool) -> ScoreFn:
     if os.environ.get("ANTHROPIC_API_KEY"):
-        return Scorer().score(pairs)
+        return Scorer(rubric.model, rubric.system_prompt).score
     if dry_run:
-        log.warning("ANTHROPIC_API_KEY not set; showing unscored matches")
-        return ScoreResult(alerts=[Alert(item=i, ticker=t, score=0, direction="neutral", reason="(unscored)") for i, t in pairs])
+        def unscored(pairs) -> ScoreResult:
+            log.warning("ANTHROPIC_API_KEY not set; showing unscored matches")
+            return ScoreResult(alerts=[Alert(item=i, ticker=t, score=0, direction="neutral", reason="(unscored)") for i, t in pairs])
+        return unscored
     raise RunFailed("ANTHROPIC_API_KEY is not set")
+
+
+def score_all(pairs, scorer: ScoreFn, shadows: Dict[str, ScoreFn]):
+    """Score the same pairs with the active rubric and every shadow, concurrently.
+    A failing shadow is logged and treated as unscored; it never fails the run."""
+    if not pairs:
+        return ScoreResult(), {v: ScoreResult() for v in shadows}
+    with ThreadPoolExecutor(max_workers=1 + len(shadows)) as pool:
+        active = pool.submit(scorer, pairs)
+        pending = {v: pool.submit(fn, pairs) for v, fn in shadows.items()}
+        shadow_results = {}
+        for version, future in pending.items():
+            try:
+                shadow_results[version] = future.result()
+            except Exception as e:
+                log.warning("shadow rubric %s failed: %s", version, e)
+                shadow_results[version] = ScoreResult(failed=list(pairs))
+        return active.result(), shadow_results
+
+
+def apply_floor(alerts: List[Alert]) -> None:
+    for alert in alerts:
+        floor = sec_edgar.score_floor(alert.item)
+        alert.floor_applied = floor > alert.score
+        alert.score = max(alert.score, floor)
 
 
 def process(
@@ -102,11 +133,15 @@ def process(
     threshold: int,
     dry_run: bool = False,
     cooldown: timedelta = timedelta(hours=12),
+    version: str = "v1",
+    shadows: Optional[Dict[str, ScoreFn]] = None,
 ) -> dict:
     """Score new items, push alerts, and record items and scores. Returns run counts.
 
     An item is only written to news_items (and so counts as processed) once all of
-    its pairs were scored; items whose scoring failed are picked up by a later run.
+    its pairs were scored by the active rubric (`version`); items whose scoring
+    failed are picked up by a later run. Shadow rubrics score the same pairs and
+    are recorded, but never push.
     """
     fetched = len(items)
     items = dedupe(items)
@@ -117,16 +152,16 @@ def process(
     log.info("fetched %d new items, %d watchlist matches", len(items), len(pairs))
 
     t = time.monotonic()
-    result: ScoreResult = scorer(pairs)
+    result, shadow_results = score_all(pairs, scorer, shadows or {})
     score_s = round(time.monotonic() - t, 1)
     if result.all_failed:
         raise RunFailed(f"all {result.batches} scoring batches failed")
 
+    apply_floor(result.alerts)
     for alert in result.alerts:
-        floor = sec_edgar.score_floor(alert.item)
-        alert.floor_applied = floor > alert.score
-        alert.score = max(alert.score, floor)
         log.info("%s %d/5 %s", alert.ticker, alert.score, alert.item.title)
+    for shadow in shadow_results.values():
+        apply_floor(shadow.alerts)
 
     recent = db.recent_alerts(conn, datetime.now(timezone.utc) - cooldown) if conn is not None else []
     suppressor = Suppressor(recent)
@@ -156,7 +191,7 @@ def process(
             {
                 "item_id": a.item.id,
                 "ticker": a.ticker,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": version,
                 "score": a.score,
                 "direction": a.direction,
                 "reason": a.reason,
@@ -165,6 +200,23 @@ def process(
                 "suppressed": suppressed.get((a.item.id, a.ticker)),
             }
             for a in result.alerts
+        ]
+        done_ids = {item.id for item in done}
+        scores += [
+            {
+                "item_id": a.item.id,
+                "ticker": a.ticker,
+                "prompt_version": shadow_version,
+                "score": a.score,
+                "direction": a.direction,
+                "reason": a.reason,
+                "floor_applied": a.floor_applied,
+                "alerted": False,
+                "suppressed": None,
+            }
+            for shadow_version, shadow in shadow_results.items()
+            for a in shadow.alerts
+            if a.item.id in done_ids
         ]
         t = time.monotonic()
         snapshot = list(sent)  # only pushed alerts: suppressed ones would repeat the same quotes
@@ -189,6 +241,10 @@ def process(
         "score_s": score_s,
         "write_s": write_s,
     }
+    if shadow_results:
+        counts["shadows"] = {
+            v: {"scored": len(r.alerts), "failed_pairs": len(r.failed)} for v, r in shadow_results.items()
+        }
     if notify_failures:
         raise RunFailed(f"{notify_failures} push notification(s) failed", counts)
     return counts
@@ -200,7 +256,7 @@ def run(dry_run: bool = False) -> None:
     notifier = Notifier(dry_run=dry_run)
     # Unscored dry runs (no API key) show every match.
     threshold = cfg.threshold if os.environ.get("ANTHROPIC_API_KEY") else 0
-    scorer = lambda pairs: score_pairs(pairs, dry_run)  # noqa: E731
+    cooldown = timedelta(hours=cfg.alert_cooldown_hours)
 
     if os.environ.get("DATABASE_URL"):
         conn = db.connect()
@@ -211,17 +267,25 @@ def run(dry_run: bool = False) -> None:
         raise RunFailed("DATABASE_URL is not set")
 
     try:
-        if dry_run:  # dry runs read the database for dedupe but never write
+        if dry_run:  # dry runs read the database for dedupe but never write, and skip shadows
+            stored = rubrics.scoring(conn) if conn is not None and db.prompt_versions(conn) else []
+            active = stored[0] if stored else rubrics.load_files()[0]
             items = collect(cfg, fetch_since(conn))
-            process(conn, items, matcher, notifier, scorer, threshold, dry_run=True,
-                    cooldown=timedelta(hours=cfg.alert_cooldown_hours))
+            process(conn, items, matcher, notifier, make_scorer(active, True), threshold, dry_run=True,
+                    cooldown=cooldown, version=active.id)
         else:
             def work() -> dict:
-                db.ensure_prompt_version(conn, PROMPT_VERSION, MODEL, SYSTEM)
+                rubrics.sync(conn)
+                active, *shadows = rubrics.scoring(conn)
                 fetch_s: Dict[str, float] = {}
                 items = collect(cfg, fetch_since(conn), fetch_s)
-                counts = process(conn, items, matcher, notifier, scorer, threshold,
-                                 cooldown=timedelta(hours=cfg.alert_cooldown_hours))
+                counts = process(
+                    conn, items, matcher, notifier, make_scorer(active, False), threshold,
+                    cooldown=cooldown,
+                    version=active.id,
+                    shadows={r.id: make_scorer(r, False) for r in shadows},
+                )
+                counts["rubrics"] = [active.id] + [r.id for r in shadows]
                 counts["fetch_s"] = fetch_s
                 t = time.monotonic()
                 counts["options"] = snapshots.guarded("entries", snapshots.take_entries, conn, YahooChains(), datetime.now(timezone.utc))
@@ -232,7 +296,6 @@ def run(dry_run: bool = False) -> None:
     finally:
         if conn is not None:
             conn.close()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check news sources and push stock alerts")

@@ -132,3 +132,18 @@ def test_report_on_an_empty_database(conn):
     notifier = FakeNotifier()
     build_and_publish(conn, notifier, now=NOW, dry_run=True)
     assert notifier.messages[0][1] == "No price outcomes yet."
+
+
+def test_rubric_comparison_is_paired(data):
+    # v2 (shadow) scores two of the four articles; v1 scored all four.
+    db.ensure_prompt_version(data, "v2", "m", "p2")
+    db.insert_scores(data, [
+        dict(item_id="c", ticker="MSFT", prompt_version="v2", score=4, direction="bullish", reason="",
+             floor_applied=False, alerted=False),
+        dict(item_id="d", ticker="TSLA", prompt_version="v2", score=2, direction="neutral", reason="",
+             floor_applied=False, alerted=False),
+    ])
+    rows = {r[0]: r for r in _section(run_sections(data, SINCE), "Rubric comparison").rows}
+    assert rows["v1"][1:4] == ("active", 2, 100)  # only the shared articles: MSFT 4, TSLA 5
+    assert rows["v2"][1:4] == ("shadow", 2, 50)  # v2 keeps 4+ for one of the two days
+    assert rows["v1"][7] == 50 and rows["v2"][7] == 100  # v2 dropped the wrong-way TSLA call
