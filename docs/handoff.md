@@ -1,8 +1,37 @@
 # Handoff: stock-news-alerts research loop
 
-**Last updated:** 2026-10-18 · **Plan:** [`plans/postgres-research-loop.md`](plans/postgres-research-loop.md)
+**Last updated:** 2026-10-18 (end of session) · **Plans:** [`plans/postgres-research-loop.md`](plans/postgres-research-loop.md) (done) · [`plans/self-learning-layer.md`](plans/self-learning-layer.md) (next)
 
-Read this first when picking the project back up. It covers what's built, how it runs, what the first week of data showed, and what's next.
+Read this first when picking the project back up. It covers what's built, how it runs, what the first week of data showed, and what's next. **Section 0 is the to-do list for the next session.**
+
+---
+
+## 0. Start here: state at the end of the last session
+
+**Open PRs**
+- **#11, "Plan: self-learning layer"** (docs only, includes this handoff update). Waiting for review and merge.
+
+**To do next, in order**
+1. **Verify the `label` schedule fix.** It was firing at 23:45 UTC (after the close), so no `d1`/`d3` option snapshots were taken in week one. The user was asked to set `label-weekdays` to **15:45 America/New_York** in EventBridge Scheduler. Check: the next weekday `label` run should start at about 19:45 UTC, and its `runs.counts.options.follow_ups` should be non-zero.
+   ```bash
+   gh run list --workflow check.yml --limit 100 --json displayTitle,createdAt --jq '.[]|select(.displayTitle=="label")|.createdAt' | head -3
+   ```
+2. **Verify v2 is running as a shadow.** After #10's merge, the next alerts run should record v2 (`runs.counts.rubrics` = `["v1","v2"]`, plus a `shadows.v2` count). Watch Claude cost: scoring roughly doubles while v2 runs.
+3. **Build Phase 0 of the self-learning plan** (`feature/capture-entry-context`): store price at publication (first 5-minute bar at or after `published_at`), SPY at publication, and previous closes for ticker and SPY in `price_outcomes`, and backfill. **Deadline: about Dec 10, 2026.** yfinance keeps 5-minute bars for about 60 days, so the first week's (Oct 13) context is lost after that.
+4. **Saturday Oct 24:** first scheduled report with suppression and ticker-day counting in effect. Pushes should be a handful a day (they were ~93/day before #8).
+5. **Around Nov 8–15:** judge v2 vs v1 with "Rubric comparison" and "Better than guessing?", then `python -m alerts.rubrics promote v2` or `retire v2`.
+6. **Later:** Phases 1–3 of the self-learning plan, and convert "Implied vs realized" (`sql/report/08_*.sql`) to ticker-days once `d1`/`d3` snapshots exist.
+
+**Working notes for the assistant**
+- `gh` is installed (`/opt/homebrew/bin/gh`) and authenticated as EricS01. Open PRs with it; don't merge without the user saying so. Auto-merge is disabled on the repo.
+- **No Claude attribution anywhere:** no `Co-Authored-By` trailer and no "Generated with Claude Code" footer.
+- Don't remind the user to rotate pasted credentials.
+- Reading production directly from a local shell (for example copying prod into `dev`) was blocked by the permission checker. To see production numbers, trigger a report dry run in Actions and read its log:
+  ```bash
+  gh workflow run check.yml --ref main -f job=report -f dry_run=true
+  ```
+- Local Python is 3.9 (`.venv`); CI uses 3.12. Keep code 3.9-compatible. Local DB tests run against the Neon `dev` branch through `.env` (`set -a; source .env; set +a`), which takes 1–2 minutes.
+- Commit in small steps and run the tests at each commit before pushing.
 
 ---
 
@@ -18,8 +47,10 @@ The app pushes phone alerts for market-moving news, and records everything it do
 | #6 | Options snapshots: 8 near-the-money contracts per alert at entry, +1 day (`d1`) and +3 days (`d3`); paper only |
 | #7 | Weekly `report` job: job summary plus an ntfy headline |
 | #8 | Report counts **ticker-days** (not articles) with 95% ranges and a baseline; HTML stripped from feeds (GOOGL bug); each story pushed once; 12 h cooldown per ticker and direction |
+| #9 | This handoff |
+| #10 | **Shadow rubrics:** prompts are files (`prompts/v1.md`, `prompts/v2.md`) synced into `prompt_versions`; active and shadow rubrics score the same pairs, and only active pushes; "Rubric comparison" report section (paired); `python -m alerts.rubrics status / promote / retire`. **v2 is the first experiment** (see section 5). |
 
-**Next:** PR 6 of the plan, shadow rubrics (see section 5).
+All six PRs of the original plan are done (the plan's PRs 1–6 are repo PRs #3–#7 and #10).
 
 ## 2. How it runs
 
@@ -81,10 +112,21 @@ Source: report dry run on 2026-10-18, after #8 (per ticker-day).
 
 This is research on the scorer's output, not a trading signal or investment advice. The app never places trades.
 
-## 5. Next steps
+## 5. Experiments in flight
 
-1. **PR 6, shadow rubrics** (in progress): score every active and shadow rubric version on the same pairs; only `active` pushes; a paired comparison section in the report; a documented promote/retire procedure. First experiment, **v2**: opinion, previews, price targets, holdings filings, recaps and tangential mentions score 2 or lower, and 4–5 are reserved for new, material, company-specific information. Same model, so the rubric is the only change. This doubles Claude scoring cost while a shadow runs.
-2. Verify the `label` schedule fix (section 2).
-3. Convert "Implied vs realized" to ticker-days once option follow-ups exist.
-4. After 3–4 weeks of paired data: promote or retire v2, by hit rate vs baseline, share of days scored 4+, and move size on 4+ days vs the rest.
-5. **Self-learning layer** ([plan](plans/self-learning-layer.md)). Phase 0 (store price at publication and previous closes) should land soon: it needs 5-minute bars, which yfinance keeps for only ~60 days, so the backfill for Oct 13 data must run before about Dec 10, 2026.
+**v2 rubric (shadow, since #10 was merged on 2026-10-18).** Same model as v1. It sends opinion, previews of scheduled events, price targets and routine rating changes, institutional holdings filings, recaps of price moves, already-expected product news and tangential mentions to 2 or lower, and reserves 4–5 for new, material, company-specific information ("most items should score 1 or 2; when unsure, choose the lower score"). Success looks like: 4+ on far fewer ticker-days than v1, bigger moves on its 4+ days than on the rest, and a hit-rate range above both v1 and the better baseline. Judge after 3–4 weeks.
+
+**How shadow rubrics work:** each alerts run sends every (article, ticker) pair to Claude once per live rubric. Results are stored side by side in `scores` (different `prompt_version`). Only the active rubric's scores drive pushes, suppression and option snapshots. Because both rubrics judge the same news on the same days, the comparison isn't confounded by which week it was. To try another idea, add `prompts/v3.md` with one change; never edit an existing file.
+
+## 6. Self-learning layer (planned)
+
+Plan: [`plans/self-learning-layer.md`](plans/self-learning-layer.md). In short: a small scikit-learn model, retrained weekly in the Saturday job, predicts (1) an unusually large volatility-normalized move vs SPY and (2) whether a direction call is right. It uses inputs available at alert time: Claude scores, source, ticker volatility, story novelty, timing, whether the stock already moved before entry, the SPY move, and distance to earnings. It's judged by walk-forward evaluation on ticker-days, runs as a shadow first, and is promoted only if it beats score-only over 4 held-out weeks. It then gates pushes (`score ≥ 4 AND probability ≥ cutoff`).
+
+| Phase | When | Branch | Scope |
+|---|---|---|---|
+| 0 | **Now** (before ~Dec 10) | `feature/capture-entry-context` | Price and SPY at publication, previous closes; backfill |
+| 1 | Weeks 2–4 | `feature/feature-view` | `features` view with leakage tests, normalized label, earnings dates, "Model readiness" report section |
+| 2 | ~Month 2 | `feature/train-job` | `alerts/learn.py`, weekly `train`, `models` and `model_predictions` tables, shadow predictions |
+| 3 | ~Month 3 | `feature/model-gate` | Promotion gate, push gate with a daily-volume cutoff, drift checks |
+
+Not viable before about 600 labeled ticker-days (2–3 months at ~85 a week).
