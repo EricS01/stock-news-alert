@@ -16,6 +16,7 @@ class Config:
     threshold: int = 4
     sources: Dict[str, bool] = field(default_factory=dict)
     cashtag_only: Set[str] = field(default_factory=set)
+    alert_cooldown_hours: float = 12
 
     def source_enabled(self, name: str) -> bool:
         return self.sources.get(name, True)
@@ -31,4 +32,5 @@ def load_config(path: Path = DEFAULT_PATH) -> Config:
         threshold=int(data.get("threshold", 4)),
         sources=data.get("sources") or {},
         cashtag_only={t.upper() for t in data.get("cashtag_only") or []},
+        alert_cooldown_hours=float(data.get("alert_cooldown_hours", 12)),
     )
