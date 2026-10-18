@@ -166,3 +166,40 @@ def test_cooldown_expires(conn):
     notifier = FakeNotifier()
     _process(conn, [_story("n:2", "Nvidia raises guidance")], scorer_returning({("n:2", "NVDA"): 4}), notifier)
     assert notifier.sent == [("n:2", "NVDA")]
+
+
+def test_shadow_rubric_scores_the_same_pairs_but_never_pushes(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    db.ensure_prompt_version(conn, "v2", "m", "p2")
+    notifier = FakeNotifier()
+    counts = process(conn, _items(), Matcher(STOCKS), notifier, scorer_returning({("hn:1", "NVDA"): 2}), threshold=4,
+                     version="v1", shadows={"v2": scorer_returning({("hn:1", "NVDA"): 5, ("hn:2", "AAPL"): 4})})
+    assert notifier.sent == [] and counts["shadows"] == {"v2": {"scored": 2, "failed_pairs": 0}}
+    rows = conn.execute("SELECT prompt_version, item_id, score, alerted FROM scores ORDER BY 1, 2").fetchall()
+    assert rows == [("v1", "hn:1", 2, False), ("v1", "hn:2", 1, False),
+                    ("v2", "hn:1", 5, False), ("v2", "hn:2", 4, False)]
+    assert db.open_snapshot_queue(conn) == []
+
+
+def test_failing_shadow_never_fails_the_run(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    db.ensure_prompt_version(conn, "v2", "m", "p2")
+
+    def broken(pairs):
+        raise RuntimeError("bad prompt")
+
+    notifier = FakeNotifier()
+    counts = process(conn, _items(), Matcher(STOCKS), notifier, scorer_returning({("hn:1", "NVDA"): 4}), threshold=4,
+                     version="v1", shadows={"v2": broken})
+    assert notifier.sent == [("hn:1", "NVDA")]
+    assert counts["shadows"]["v2"] == {"scored": 0, "failed_pairs": 2}
+    assert conn.execute("SELECT count(*) FROM scores WHERE prompt_version = 'v2'").fetchone()[0] == 0
+
+
+def test_shadow_scores_are_only_kept_for_processed_items(conn):
+    db.ensure_prompt_version(conn, "v1", "m", "p")
+    db.ensure_prompt_version(conn, "v2", "m", "p2")
+    process(conn, _items(), Matcher(STOCKS), FakeNotifier(), scorer_returning({}, failed_ids={"hn:1"}), threshold=4,
+            version="v1", shadows={"v2": scorer_returning({})})
+    # hn:1 failed for the active rubric, so it isn't processed yet; its shadow score would have no news_items row.
+    assert [r[0] for r in conn.execute("SELECT item_id FROM scores WHERE prompt_version = 'v2'")] == ["hn:2"]

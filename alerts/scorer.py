@@ -12,24 +12,10 @@ from .models import Alert, NewsItem
 
 log = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-5-5"
-PROMPT_VERSION = "v1"  # bump when SYSTEM or MODEL changes, so scores stay comparable
 BATCH_SIZE = 10
 WORKERS = 4  # batches scored concurrently
 
-SYSTEM = """You are a sell-side equity analyst triaging a news feed for a retail investor.
-For each numbered (headline, ticker) pair, judge how likely the news is to move that
-stock's price in the next few trading days.
-
-Score 1-5:
-1 = irrelevant, or the company is only mentioned in passing (e.g. "built with Google Fonts")
-2 = relevant but routine, no price impact expected
-3 = noteworthy, minor impact possible
-4 = material: earnings surprise, guidance change, major product/regulatory/legal event, exec departure, big contract
-5 = major: M&A, fraud/investigation, outage or recall at scale, bankruptcy-level risk
-
-direction: bullish, bearish, or neutral for the given ticker.
-reason: one short sentence a phone notification can show."""
+# The rubric (model and system prompt) comes from prompts/vN.md via alerts.rubrics.
 
 SCHEMA = {
     "type": "object",
@@ -117,14 +103,16 @@ def make_batches(pairs: List[Pair], size: int = BATCH_SIZE) -> List[List[Pair]]:
 
 
 class Scorer:
-    def __init__(self, client: Optional[anthropic.Anthropic] = None):
+    def __init__(self, model: str, system_prompt: str, client: Optional[anthropic.Anthropic] = None):
+        self.model = model
+        self.system_prompt = system_prompt
         self.client = client or anthropic.Anthropic()
 
     def _score_batch(self, pairs: List[Pair]) -> List[Alert]:
         response = self.client.messages.create(
-            model=MODEL,
+            model=self.model,
             max_tokens=4096,
-            system=SYSTEM,
+            system=self.system_prompt,
             output_config={
                 "effort": "low",
                 "format": {"type": "json_schema", "schema": SCHEMA},
