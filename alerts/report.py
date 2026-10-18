@@ -97,15 +97,18 @@ def headline(conn, since: datetime):
     """(title, message) for the ntfy push."""
     columns, rows = query(conn, (REPORT_DIR / "headline.sql").read_text(), since)
     h = dict(zip(columns, rows[0]))
-    title = f"Weekly report: {h['scores']} scores, {h['alerts']} alerts"
-    if not h["labeled_1d"]:
+    title = f"Weekly report: {h['scores']} scores, {h['pushed']} pushed"
+    if not h["labeled_days"]:
         return title, "No price outcomes yet."
     lines = [
-        f"1-day move vs SPY: {fmt(h['high_move_1d'])}% for scores 4-5, {fmt(h['low_move_1d'])}% for 1-2 "
-        f"({h['labeled_1d']} labeled).",
+        f"1-day move vs SPY: {fmt(h['high_move_1d'])}% on days scored 4-5, {fmt(h['low_move_1d'])}% on days "
+        f"scored 1-2 ({h['labeled_days']} ticker-days).",
     ]
-    if h["alert_hit_rate_1d"] is not None:
-        lines.append(f"Alerts moving the predicted way: {fmt(h['alert_hit_rate_1d'])}%.")
+    if h["calls"]:
+        lines.append(
+            f"Direction right on {fmt(h['hit_rate_1d'])}% of {h['calls']} days scored 4+ "
+            f"(95% range {fmt(h['hit_low'])}-{fmt(h['hit_high'])}%)."
+        )
     return title, "\n".join(lines)
 
 

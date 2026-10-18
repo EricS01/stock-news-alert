@@ -1,11 +1,11 @@
 -- title: Does a higher score mean a bigger move?
--- note: Spearman rank correlation between score and the size of the abnormal move (1 = perfect, 0 = none). Tied values get their average rank.
+-- note: Spearman rank correlation between score and the size of the abnormal move, per ticker-day (1 = perfect, 0 = none, negative = backwards). Tied values get their average rank.
 WITH moves AS (
     SELECT '1 day' AS horizon, score, abs(abn_1d) AS move
-    FROM scored_outcomes WHERE version_status = 'active' AND abn_1d IS NOT NULL
+    FROM ticker_days WHERE version_status = 'active' AND abn_1d IS NOT NULL
     UNION ALL
     SELECT '5 days', score, abs(abn_5d)
-    FROM scored_outcomes WHERE version_status = 'active' AND abn_5d IS NOT NULL
+    FROM ticker_days WHERE version_status = 'active' AND abn_5d IS NOT NULL
 ),
 ranked AS (
     SELECT
@@ -16,7 +16,7 @@ ranked AS (
             + (count(*) OVER (PARTITION BY horizon, move) - 1) / 2.0 AS move_rank
     FROM moves
 )
-SELECT horizon, count(*) AS n, round(corr(score_rank, move_rank)::numeric, 3) AS spearman_rho
+SELECT horizon, count(*) AS ticker_days, round(corr(score_rank, move_rank)::numeric, 3) AS spearman_rho
 FROM ranked
 GROUP BY horizon
 ORDER BY horizon;
