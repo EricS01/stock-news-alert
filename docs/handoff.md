@@ -77,7 +77,7 @@ Source: report dry run on 2026-10-18, after #8 (per ticker-day).
 3. **Always compare against the baseline.** A hit rate only matters if it beats always-bullish or always-bearish on the same days.
 4. **Sample size.** At about 85 ticker-days a week, telling 60% from 50% reliably takes a couple of months of calls. Don't tune to a single week.
 5. **Direction vs magnitude.** For heavily covered mega-caps, direction is largely priced in within minutes, and alerts arrive up to 30 minutes after publication. Predicting *which days move a lot* may be more achievable. It's measured by the straddle and implied-vs-realized sections, once `d1`/`d3` snapshots exist.
-6. **Self-learning later.** Once there are a few hundred independent ticker-days (2–3 months), a small model retrained weekly on top of the Claude score (inputs: score, direction, source, ticker, time of day, first story vs repeat, pre-entry move) could predict outcomes directly. Promote a new model only if it beats the current one on a later, held-out week. Fine-tuning the LLM itself isn't worth it at this data size.
+6. **Self-learning later.** Once there are a few hundred independent ticker-days (2–3 months), a small model retrained weekly on top of the Claude score (inputs: score, direction, source, ticker, time of day, first story vs repeat, pre-entry move) could predict outcomes directly. Promote a new model only if it beats the current one on a later, held-out week. Fine-tuning the LLM itself isn't worth it at this data size. Full plan: [`plans/self-learning-layer.md`](plans/self-learning-layer.md).
 
 This is research on the scorer's output, not a trading signal or investment advice. The app never places trades.
 
@@ -87,3 +87,4 @@ This is research on the scorer's output, not a trading signal or investment advi
 2. Verify the `label` schedule fix (section 2).
 3. Convert "Implied vs realized" to ticker-days once option follow-ups exist.
 4. After 3–4 weeks of paired data: promote or retire v2, by hit rate vs baseline, share of days scored 4+, and move size on 4+ days vs the rest.
+5. **Self-learning layer** ([plan](plans/self-learning-layer.md)). Phase 0 (store price at publication and previous closes) should land soon: it needs 5-minute bars, which yfinance keeps for only ~60 days, so the backfill for Oct 13 data must run before about Dec 10, 2026.
